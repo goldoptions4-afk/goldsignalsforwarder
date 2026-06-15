@@ -15,43 +15,38 @@ VIP_CHANNEL = int(os.environ.get("VIP_CHANNEL", "-1005532840418"))
 # HELPERS
 # ─────────────────────────────────────────────
 
-def extract_prices(text):
-    """Extract all price-like numbers from text (4 digits, optionally with decimal)"""
-    return [float(p) for p in re.findall(r'\b4[0-9]{2,3}(?:\.[0-9]+)?\b', text)]
+def format_price(p):
+    """Always format as .00"""
+    return f"{float(p):.2f}"
 
 def extract_entry(text):
-    """
-    Returns (top_entry, bottom_entry) with bottom always = top - 7 for buys.
-    For sells, top + 7.
-    Handles single price or range like 4340-4337 or 4340 - 4337
-    """
+    """Returns (top, bottom) raw prices before applying 7pt logic"""
     range_match = re.search(
         r'(4[0-9]{2,3}(?:\.[0-9]+)?)\s*[-–]\s*(4[0-9]{2,3}(?:\.[0-9]+)?)', text
     )
     if range_match:
         p1 = float(range_match.group(1))
         p2 = float(range_match.group(2))
-        top = max(p1, p2)
-        bottom = min(p1, p2)
-        return top, bottom  # we'll apply the -7/+7 logic per direction later
-    else:
-        prices = extract_prices(text)
-        # Try to find entry price — first price mentioned near BUY/SELL keyword
-        entry_match = re.search(
-            r'(?:buy|sell|now|@|entry|limit)\s*[:\s]?\s*(4[0-9]{2,3}(?:\.[0-9]+)?)',
-            text, re.IGNORECASE
-        )
-        if entry_match:
-            p = float(entry_match.group(1))
-            return p, p
-        elif prices:
-            return prices[0], prices[0]
+        return max(p1, p2), min(p1, p2)
+
+    entry_match = re.search(
+        r'(?:buy|sell|now|@|entry|limit)\s*[:\s]?\s*(4[0-9]{2,3}(?:\.[0-9]+)?)',
+        text, re.IGNORECASE
+    )
+    if entry_match:
+        p = float(entry_match.group(1))
+        return p, p
+
+    prices = re.findall(r'\b4[0-9]{2,3}(?:\.[0-9]+)?\b', text)
+    if prices:
+        p = float(prices[0])
+        return p, p
+
     return None, None
 
 def extract_tps(text):
     """Extract all TP values in order"""
     tps = []
-    # Match patterns like TP1: 4350, TP 4360, 🥷TP2 4315 etc
     matches = re.finditer(
         r'(?:tp|target)\s*\d*\s*[:\s]?\s*(4[0-9]{2,3}(?:\.[0-9]+)?)',
         text, re.IGNORECASE
@@ -63,19 +58,26 @@ def extract_tps(text):
     return tps
 
 def extract_sl(text):
-    """Extract SL value"""
     sl_match = re.search(
-        r'(?:sl|stop\s*loss|stoploss)\s*[:\s]?\s*(4[0-9]{2,3}(?:\.[0-9]+)?)',
+        r'(?:sl|stop\s*loss|stoploss)[:\s🚫☹️]*\s*(4[0-9]{2,3}(?:\.[0-9]+)?)',
         text, re.IGNORECASE
     )
     if sl_match:
         return float(sl_match.group(1))
     return None
 
-def format_price(p):
-    if p == int(p):
-        return str(int(p))
-    return f"{p:.1f}"
+def get_direction(text):
+    if re.search(r'\bsell\b', text, re.IGNORECASE):
+        return "SELL"
+    if re.search(r'\bbuy\b', text, re.IGNORECASE):
+        return "BUY"
+    return None
+
+def get_tp_number(text):
+    m = re.search(r'tp\s*(\d)', text, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return None
 
 # ─────────────────────────────────────────────
 # SIGNAL DETECTION
@@ -108,22 +110,8 @@ def is_sl_hit(text):
         text, re.IGNORECASE
     ))
 
-def get_direction(text):
-    if re.search(r'\bsell\b', text, re.IGNORECASE):
-        return "SELL"
-    if re.search(r'\bbuy\b', text, re.IGNORECASE):
-        return "BUY"
-    return None
-
-def get_tp_number(text):
-    """Try to extract which TP was hit"""
-    m = re.search(r'tp\s*(\d)', text, re.IGNORECASE)
-    if m:
-        return m.group(1)
-    return None
-
 # ─────────────────────────────────────────────
-# MESSAGE FORMATTERS
+# FORMATTERS
 # ─────────────────────────────────────────────
 
 def format_signal(text):
@@ -140,11 +128,11 @@ def format_signal(text):
 
     # Apply 7 point range logic
     if direction == "BUY":
-        bottom_display = top_entry - 7
-        entry_str = f"{format_price(top_entry)} - {format_price(bottom_display)}"
+        entry_top = top_entry
+        entry_bottom = top_entry - 7
     else:  # SELL
-        top_display = top_entry + 7
-        entry_str = f"{format_price(top_display)} - {format_price(top_entry)}"
+        entry_top = bottom_entry + 7
+        entry_bottom = bottom_entry
 
     emoji = "🟢" if direction == "BUY" else "🔴"
 
@@ -152,23 +140,20 @@ def format_signal(text):
         f"{direction} {emoji}",
         f"XAU/USD | GOLD",
         f"",
-        f"📥 ENTRY: {entry_str}",
+        f"ENTRY: {format_price(entry_top)} - {format_price(entry_bottom)}",
         f"",
     ]
 
     if tps:
         for i, tp in enumerate(tps, 1):
-            if len(tps) == 1:
-                lines.append(f"✅ TP: {format_price(tp)}")
-            else:
-                lines.append(f"✅ TP{i}: {format_price(tp)}")
+            lines.append(f"✅ TP{i} {format_price(tp)}")
         lines.append("")
 
     if sl:
-        lines.append(f"🛑 SL: {format_price(sl)}")
+        lines.append(f"🛑 SL {format_price(sl)}")
 
     lines.append("")
-    lines.append("Use appropriate lot sizes")
+    lines.append("Use Appropriate Lot Sizes")
 
     return "\n".join(lines)
 
@@ -176,19 +161,13 @@ def format_tp_hit(text):
     tp_num = get_tp_number(text)
     direction = get_direction(text)
     dir_str = f" {direction} 🟢" if direction == "BUY" else f" {direction} 🔴" if direction else ""
+    tp_label = f"TP{tp_num}" if tp_num else "TP1"
 
-    if tp_num:
-        return (
-            f"✅ TP{tp_num} HIT!\n"
-            f"XAU/USD | GOLD{dir_str}\n\n"
-            f"Well done! Secure your profits 💰"
-        )
-    else:
-        return (
-            f"✅ TP HIT!\n"
-            f"XAU/USD | GOLD{dir_str}\n\n"
-            f"Well done! Secure your profits 💰"
-        )
+    return (
+        f"✅ {tp_label} HIT!\n"
+        f"XAU/USD | GOLD{dir_str}\n\n"
+        f"Well done! Secure your profits 💰"
+    )
 
 def format_breakeven():
     return (
@@ -217,7 +196,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = message.chat.id
     logger.info(f"Message from chat {chat_id}")
 
-    # Only process messages from holding channel
     if chat_id != HOLDING_CHANNEL:
         return
 
