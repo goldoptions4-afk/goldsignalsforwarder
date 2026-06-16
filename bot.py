@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import logging
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
@@ -10,6 +11,26 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 HOLDING_CHANNEL = int(os.environ.get("HOLDING_CHANNEL", "-1002083673417"))
 VIP_CHANNEL = int(os.environ.get("VIP_CHANNEL", "-1004347840465"))
+
+# ─────────────────────────────────────────────
+# STATE — tracks last signal message ID for reply threading
+# ─────────────────────────────────────────────
+
+STATE_FILE = "/tmp/gold_state.json"
+
+def load_state():
+    try:
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {"last_signal_message_id": None}
+
+def save_state(state):
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f)
+    except Exception as e:
+        logger.error(f"Failed to save state: {e}")
 
 # ─────────────────────────────────────────────
 # HELPERS
@@ -88,12 +109,6 @@ def is_new_signal(text):
     return has_direction and has_price and (has_tp or has_sl)
 
 def is_tp_hit(text):
-    """
-    Catches any mention of TP1/TP2/TP3 being triggered:
-    - "TP1✅", "TP2 ✅✅", "TP3✅✅✅"
-    - "TP1 hit", "Target 2 reached", "TP3 done" etc
-    But excludes full new-signal messages (handled separately, checked first)
-    """
     has_tp_number = bool(re.search(r'\btp\s*\d', text, re.IGNORECASE))
     if not has_tp_number:
         return False
@@ -195,20 +210,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not message:
         return
 
-    # Skip videos, documents, stickers, animations entirely (no text value in these for us)
+    # Skip videos, documents, stickers, animations
     if message.video or message.document or message.sticker or message.animation:
-        logger.info("Skipping non-text media message (video/doc/sticker/gif)")
+        logger.info("Skipping non-text media message")
         return
 
-    # Get text from either a plain text message OR the caption of a photo
-    # (providers often send charts/screenshots WITH the trade as the caption)
+    # Get text from plain message OR photo caption
     text = None
     if message.text:
         text = message.text.strip()
     elif message.photo and message.caption:
         text = message.caption.strip()
     elif message.photo and not message.caption:
-        logger.info("Skipping photo with no caption — nothing to extract")
+        logger.info("Skipping photo with no caption")
         return
     else:
         return
@@ -221,30 +235,48 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"Processing: {text[:80]}")
 
+    state = load_state()
     output = None
+    is_update = False  # True for TP/BE/SL — should reply to original signal
 
     if is_new_signal(text):
         output = format_signal(text)
+        is_update = False
         logger.info("Detected: NEW SIGNAL")
     elif is_tp_hit(text):
         output = format_tp_hit(text)
+        is_update = True
         logger.info("Detected: TP HIT")
     elif is_breakeven(text):
         output = format_breakeven()
+        is_update = True
         logger.info("Detected: BREAKEVEN")
     elif is_sl_hit(text):
         output = format_sl_hit()
+        is_update = True
         logger.info("Detected: SL HIT")
     else:
         logger.info("No pattern matched — skipping")
         return
 
     if output:
-        await context.bot.send_message(
+        # Reply to original signal if this is an update (TP/BE/SL)
+        reply_to = None
+        if is_update and state.get("last_signal_message_id"):
+            reply_to = state["last_signal_message_id"]
+
+        sent = await context.bot.send_message(
             chat_id=VIP_CHANNEL,
-            text=output
+            text=output,
+            reply_to_message_id=reply_to
         )
-        logger.info("Message sent to VIP channel ✅")
+        logger.info(f"Message sent to VIP channel ✅ (message_id: {sent.message_id})")
+
+        # If this was a new signal, save its message ID for future replies
+        if not is_update:
+            state["last_signal_message_id"] = sent.message_id
+            save_state(state)
+            logger.info(f"Saved new signal message ID: {sent.message_id}")
 
 # ─────────────────────────────────────────────
 # MAIN
