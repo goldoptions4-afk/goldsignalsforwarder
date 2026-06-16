@@ -9,18 +9,16 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 HOLDING_CHANNEL = int(os.environ.get("HOLDING_CHANNEL", "-1002083673417"))
-VIP_CHANNEL = int(os.environ.get("VIP_CHANNEL", "-1005532840418"))
+VIP_CHANNEL = int(os.environ.get("VIP_CHANNEL", "-1004347840465"))
 
 # ─────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────
 
 def format_price(p):
-    """Always format as .00"""
     return f"{float(p):.2f}"
 
 def extract_entry(text):
-    """Returns (top, bottom) raw prices before applying 7pt logic"""
     range_match = re.search(
         r'(4[0-9]{2,3}(?:\.[0-9]+)?)\s*[-–]\s*(4[0-9]{2,3}(?:\.[0-9]+)?)', text
     )
@@ -45,7 +43,6 @@ def extract_entry(text):
     return None, None
 
 def extract_tps(text):
-    """Extract all TP values in order"""
     tps = []
     matches = re.finditer(
         r'(?:tp|target)\s*\d*\s*[:\s]?\s*(4[0-9]{2,3}(?:\.[0-9]+)?)',
@@ -91,12 +88,18 @@ def is_new_signal(text):
     return has_direction and has_price and (has_tp or has_sl)
 
 def is_tp_hit(text):
-    tp_words = bool(re.search(r'\btp\d?\b', text, re.IGNORECASE))
-    hit_words = bool(re.search(
-        r'\b(hit|check|reached|done|pips|round|touch|secured|profit|close|partial|half)\b',
-        text, re.IGNORECASE
-    ))
-    return tp_words and hit_words
+    """
+    Catches any mention of TP1/TP2/TP3 being triggered:
+    - "TP1✅", "TP2 ✅✅", "TP3✅✅✅"
+    - "TP1 hit", "Target 2 reached", "TP3 done" etc
+    But excludes full new-signal messages (handled separately, checked first)
+    """
+    has_tp_number = bool(re.search(r'\btp\s*\d', text, re.IGNORECASE))
+    if not has_tp_number:
+        return False
+    if is_new_signal(text):
+        return False
+    return True
 
 def is_breakeven(text):
     return bool(re.search(
@@ -126,11 +129,10 @@ def format_signal(text):
     if top_entry is None:
         return None
 
-    # Apply 7 point range logic
     if direction == "BUY":
         entry_top = top_entry
         entry_bottom = top_entry - 7
-    else:  # SELL
+    else:
         entry_top = bottom_entry + 7
         entry_bottom = bottom_entry
 
@@ -161,7 +163,7 @@ def format_tp_hit(text):
     tp_num = get_tp_number(text)
     direction = get_direction(text)
     dir_str = f" {direction} 🟢" if direction == "BUY" else f" {direction} 🔴" if direction else ""
-    tp_label = f"TP{tp_num}" if tp_num else "TP1"
+    tp_label = f"TP{tp_num}" if tp_num else "TP"
 
     return (
         f"✅ {tp_label} HIT!\n"
@@ -190,7 +192,25 @@ def format_sl_hit():
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.channel_post or update.message
-    if not message or not message.text:
+    if not message:
+        return
+
+    # Skip videos, documents, stickers, animations entirely (no text value in these for us)
+    if message.video or message.document or message.sticker or message.animation:
+        logger.info("Skipping non-text media message (video/doc/sticker/gif)")
+        return
+
+    # Get text from either a plain text message OR the caption of a photo
+    # (providers often send charts/screenshots WITH the trade as the caption)
+    text = None
+    if message.text:
+        text = message.text.strip()
+    elif message.photo and message.caption:
+        text = message.caption.strip()
+    elif message.photo and not message.caption:
+        logger.info("Skipping photo with no caption — nothing to extract")
+        return
+    else:
         return
 
     chat_id = message.chat.id
@@ -199,7 +219,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id != HOLDING_CHANNEL:
         return
 
-    text = message.text.strip()
     logger.info(f"Processing: {text[:80]}")
 
     output = None
