@@ -13,7 +13,7 @@ HOLDING_CHANNEL = int(os.environ.get("HOLDING_CHANNEL", "-1002083673417"))
 VIP_CHANNEL = int(os.environ.get("VIP_CHANNEL", "-1004347840465"))
 
 # ─────────────────────────────────────────────
-# STATE — tracks last signal message ID for reply threading
+# STATE
 # ─────────────────────────────────────────────
 
 STATE_FILE = "/tmp/gold_state.json"
@@ -23,7 +23,7 @@ def load_state():
         with open(STATE_FILE, "r") as f:
             return json.load(f)
     except:
-        return {"last_signal_message_id": None}
+        return {"last_signal_direction": None}
 
 def save_state(state):
     try:
@@ -94,7 +94,7 @@ def get_direction(text):
 def get_tp_number(text):
     m = re.search(r'tp\s*(\d)', text, re.IGNORECASE)
     if m:
-        return m.group(1)
+        return int(m.group(1))
     return None
 
 # ─────────────────────────────────────────────
@@ -105,7 +105,7 @@ def is_new_signal(text):
     has_direction = bool(re.search(r'\b(buy|sell)\b', text, re.IGNORECASE))
     has_price = bool(re.search(r'\b4[0-9]{2,3}(?:\.[0-9]+)?\b', text))
     has_tp = bool(re.search(r'\btp\b', text, re.IGNORECASE))
-    has_sl = bool(re.search(r'\bsl\b', text, re.IGNORECASE))
+    has_sl = bool(re.search(r'\b(sl|stop\s*loss)\b', text, re.IGNORECASE))
     return has_direction and has_price and (has_tp or has_sl)
 
 def is_tp_hit(text):
@@ -116,15 +116,18 @@ def is_tp_hit(text):
         return False
     return True
 
-def is_breakeven(text):
-    return bool(re.search(
-        r'\b(breakeven|break\s*even|move\s*(sl|stop)\s*to\s*entry|set\s*be)\b',
+def is_secure_profits(text):
+    """Catches TP4+ and 'close now / secure profits' messages"""
+    has_tp4_plus = bool(re.search(r'\btp\s*[4-9]\b', text, re.IGNORECASE))
+    has_close_msg = bool(re.search(
+        r'\b(close\s*now|secure\s*(your\s*)?profits?|take\s*profits?|close\s*all|close\s*trade)\b',
         text, re.IGNORECASE
     ))
+    return has_tp4_plus or has_close_msg
 
 def is_sl_hit(text):
     return bool(re.search(
-        r'\b(sl\s*hit|stop\s*loss\s*hit|stopped\s*out|setup\s*invalid|invalid\s*setup|closing\s*the\s*trade|close\s*now|cut\s*(the\s*)?trade|loss|missed)\b',
+        r'\b(sl\s*hit|stop\s*loss\s*hit|stopped\s*out|setup\s*invalid|invalid\s*setup|closing\s*the\s*trade|cut\s*(the\s*)?trade|missed)\b',
         text, re.IGNORECASE
     ))
 
@@ -135,14 +138,14 @@ def is_sl_hit(text):
 def format_signal(text):
     direction = get_direction(text)
     if not direction:
-        return None
+        return None, None
 
     top_entry, bottom_entry = extract_entry(text)
     tps = extract_tps(text)
     sl = extract_sl(text)
 
     if top_entry is None:
-        return None
+        return None, None
 
     if direction == "BUY":
         entry_top = top_entry
@@ -172,33 +175,47 @@ def format_signal(text):
     lines.append("")
     lines.append("Use Appropriate Lot Sizes")
 
-    return "\n".join(lines)
+    return "\n".join(lines), direction
 
 def format_tp_hit(text):
     tp_num = get_tp_number(text)
-    direction = get_direction(text)
-    dir_str = f" {direction} 🟢" if direction == "BUY" else f" {direction} 🔴" if direction else ""
-    tp_label = f"TP{tp_num}" if tp_num else "TP"
 
-    return (
-        f"✅ {tp_label} HIT!\n"
-        f"XAU/USD | GOLD{dir_str}\n\n"
-        f"Well done! Secure your profits 💰"
-    )
+    if tp_num == 1:
+        return (
+            f"✅ TP1 HIT!\n"
+            f"XAU/USD | GOLD\n\n"
+            f"Close the trade or move SL to entry 🔒"
+        )
+    elif tp_num == 2:
+        return (
+            f"💥 TP2 HIT!\n"
+            f"XAU/USD | GOLD\n\n"
+            f"Secure partials and hold for more 🎯"
+        )
+    elif tp_num == 3:
+        return (
+            f"🔥🔥 TP3 DESTROYED!\n"
+            f"XAU/USD | GOLD\n\n"
+            f"What a trade! Close all positions 👑\n"
+            f"This is the power of Kevin's Gold VIP 💎"
+        )
+    else:
+        # TP4+ falls through to secure profits
+        return format_secure_profits()
 
-def format_breakeven():
+def format_secure_profits():
     return (
-        f"🔒 MOVE TO BREAKEVEN\n"
+        f"💰 SECURE YOUR PROFITS!\n"
         f"XAU/USD | GOLD\n\n"
-        f"Move your SL to your entry price now!"
+        f"Close your positions and bank those gains 🏆\n"
+        f"This is the power of Kevin's Gold VIP 💎"
     )
 
 def format_sl_hit():
     return (
         f"❌ SL HIT\n"
         f"XAU/USD | GOLD\n\n"
-        f"Setup invalid. Close the trade.\n"
-        f"Manage your risk and stay disciplined 💪"
+        f"Setup invalid. We will be looking for more trades 🔍"
     )
 
 # ─────────────────────────────────────────────
@@ -237,46 +254,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = load_state()
     output = None
-    is_update = False  # True for TP/BE/SL — should reply to original signal
 
     if is_new_signal(text):
-        output = format_signal(text)
-        is_update = False
-        logger.info("Detected: NEW SIGNAL")
+        output, direction = format_signal(text)
+        if output:
+            state["last_signal_direction"] = direction
+            save_state(state)
+            logger.info(f"Detected: NEW SIGNAL ({direction})")
+
     elif is_tp_hit(text):
         output = format_tp_hit(text)
-        is_update = True
         logger.info("Detected: TP HIT")
-    elif is_breakeven(text):
-        output = format_breakeven()
-        is_update = True
-        logger.info("Detected: BREAKEVEN")
+
+    elif is_secure_profits(text):
+        output = format_secure_profits()
+        logger.info("Detected: SECURE PROFITS")
+
     elif is_sl_hit(text):
         output = format_sl_hit()
-        is_update = True
         logger.info("Detected: SL HIT")
+
     else:
         logger.info("No pattern matched — skipping")
         return
 
     if output:
-        # Reply to original signal if this is an update (TP/BE/SL)
-        reply_to = None
-        if is_update and state.get("last_signal_message_id"):
-            reply_to = state["last_signal_message_id"]
-
-        sent = await context.bot.send_message(
+        await context.bot.send_message(
             chat_id=VIP_CHANNEL,
-            text=output,
-            reply_to_message_id=reply_to
+            text=output
         )
-        logger.info(f"Message sent to VIP channel ✅ (message_id: {sent.message_id})")
-
-        # If this was a new signal, save its message ID for future replies
-        if not is_update:
-            state["last_signal_message_id"] = sent.message_id
-            save_state(state)
-            logger.info(f"Saved new signal message ID: {sent.message_id}")
+        logger.info("Message sent to VIP channel ✅")
 
 # ─────────────────────────────────────────────
 # MAIN
