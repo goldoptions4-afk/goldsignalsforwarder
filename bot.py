@@ -2,6 +2,7 @@ import os
 import re
 import json
 import logging
+import httpx
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
@@ -11,6 +12,25 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 HOLDING_CHANNEL = int(os.environ.get("HOLDING_CHANNEL", "-1002083673417"))
 VIP_CHANNEL = int(os.environ.get("VIP_CHANNEL", "-1004347840465"))
+RAY_GOLD_URL = os.environ.get("RAY_GOLD_URL", "https://web-production-f54d0.up.railway.app")
+
+# ─────────────────────────────────────────────
+# RAYGOLDSIGNALS — send signal to MT5
+# ─────────────────────────────────────────────
+
+async def send_to_mt5(text):
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
+                f"{RAY_GOLD_URL}/new_signal",
+                json={"text": text}
+            )
+            if r.status_code == 200:
+                logger.info(f"✅ Signal sent to MT5: {r.json()}")
+            else:
+                logger.warning(f"⚠️ MT5 signal failed: {r.status_code}")
+    except Exception as e:
+        logger.error(f"❌ MT5 send error: {e}")
 
 # ─────────────────────────────────────────────
 # STATE
@@ -261,6 +281,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state["last_signal_direction"] = direction
             save_state(state)
             logger.info(f"Detected: NEW SIGNAL ({direction})")
+            # Also send to MT5 for auto execution
+            await send_to_mt5(text)
 
     elif is_tp_hit(text):
         output = format_tp_hit(text)
