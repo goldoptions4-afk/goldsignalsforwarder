@@ -43,7 +43,7 @@ def load_state():
         with open(STATE_FILE, "r") as f:
             return json.load(f)
     except:
-        return {"last_signal_direction": None}
+        return {"last_signal_direction": None, "last_signal_hash": None, "last_signal_time": 0}
 
 def save_state(state):
     try:
@@ -51,6 +51,18 @@ def save_state(state):
             json.dump(state, f)
     except Exception as e:
         logger.error(f"Failed to save state: {e}")
+
+def is_duplicate_signal(text, state):
+    """Prevent same signal firing twice within 60 seconds"""
+    import hashlib, time
+    h = hashlib.md5(text.encode()).hexdigest()[:8]
+    now = time.time()
+    if h == state.get("last_signal_hash") and (now - state.get("last_signal_time", 0)) < 60:
+        logger.info(f"Duplicate signal blocked: {h}")
+        return True
+    state["last_signal_hash"] = h
+    state["last_signal_time"] = now
+    return False
 
 # ─────────────────────────────────────────────
 # HELPERS
@@ -137,6 +149,7 @@ def is_tp_hit(text):
     return True
 
 def is_secure_profits(text):
+    """Catches TP4+ and 'close now / secure profits' messages"""
     has_tp4_plus = bool(re.search(r'\btp\s*[4-9]\b', text, re.IGNORECASE))
     has_close_msg = bool(re.search(
         r'\b(close\s*now|secure\s*(your\s*)?profits?|take\s*profits?|close\s*all|close\s*trade)\b',
@@ -219,6 +232,7 @@ def format_tp_hit(text):
             f"This is the power of Kevin's Gold VIP 💎"
         )
     else:
+        # TP4+ falls through to secure profits
         return format_secure_profits()
 
 def format_secure_profits():
@@ -245,10 +259,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not message:
         return
 
+    # Skip videos, documents, stickers, animations
     if message.video or message.document or message.sticker or message.animation:
         logger.info("Skipping non-text media message")
         return
 
+    # Get text from plain message OR photo caption
     text = None
     if message.text:
         text = message.text.strip()
@@ -272,11 +288,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     output = None
 
     if is_new_signal(text):
+        if is_duplicate_signal(text, state):
+            save_state(state)
+            return
         output, direction = format_signal(text)
         if output:
             state["last_signal_direction"] = direction
             save_state(state)
             logger.info(f"Detected: NEW SIGNAL ({direction})")
+            # Also send to MT5 for auto execution
             await send_to_mt5(text)
 
     elif is_tp_hit(text):
