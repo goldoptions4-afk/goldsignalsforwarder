@@ -1,321 +1,184 @@
 import os
 import re
 import json
+import uuid
 import logging
-import httpx
-from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from flask import Flask, request, jsonify
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-HOLDING_CHANNEL = int(os.environ.get("HOLDING_CHANNEL", "-1002083673417"))
-VIP_CHANNEL = int(os.environ.get("VIP_CHANNEL", "-1004347840465"))
-RAY_GOLD_URL = os.environ.get("RAY_GOLD_URL", "https://web-production-f54d0.up.railway.app")
-
-# ─────────────────────────────────────────────
-# RAYGOLDSIGNALS — send signal to MT5
-# ─────────────────────────────────────────────
-
-async def send_to_mt5(text):
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.post(
-                f"{RAY_GOLD_URL}/new_signal",
-                json={"text": text}
-            )
-            if r.status_code == 200:
-                logger.info(f"✅ Signal sent to MT5: {r.json()}")
-            else:
-                logger.warning(f"⚠️ MT5 signal failed: {r.status_code}")
-    except Exception as e:
-        logger.error(f"❌ MT5 send error: {e}")
+app = Flask(__name__)
 
 # ─────────────────────────────────────────────
 # STATE
 # ─────────────────────────────────────────────
 
-STATE_FILE = "/tmp/gold_state.json"
+SIGNAL_FILE = "/tmp/mt5_signal.json"
+LOG_FILE = "/tmp/mt5_log.json"
 
-def load_state():
+def save_signal(signal):
+    with open(SIGNAL_FILE, "w") as f:
+        json.dump(signal, f)
+
+def load_signal():
     try:
-        with open(STATE_FILE, "r") as f:
+        with open(SIGNAL_FILE, "r") as f:
             return json.load(f)
     except:
-        return {"last_signal_direction": None}
+        return {"id": "none", "pair": "XAUUSD", "direction": "none"}
 
-def save_state(state):
+def log_event(event):
     try:
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f)
+        try:
+            with open(LOG_FILE, "r") as f:
+                logs = json.load(f)
+        except:
+            logs = []
+        logs.append({"time": datetime.utcnow().isoformat(), **event})
+        logs = logs[-50:]
+        with open(LOG_FILE, "w") as f:
+            json.dump(logs, f)
     except Exception as e:
-        logger.error(f"Failed to save state: {e}")
+        logger.error(f"Log error: {e}")
 
 # ─────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────
 
-def format_price(p):
-    return f"{float(p):.2f}"
+def parse_signal(text):
+    text = text.strip()
 
-def extract_entry(text):
+    direction = None
+    if re.search(r'\bsell\b', text, re.IGNORECASE):
+        direction = "SELL"
+    elif re.search(r'\bbuy\b', text, re.IGNORECASE):
+        direction = "BUY"
+    if not direction:
+        return None
+
     range_match = re.search(
         r'(4[0-9]{2,3}(?:\.[0-9]+)?)\s*[-–]\s*(4[0-9]{2,3}(?:\.[0-9]+)?)', text
     )
     if range_match:
         p1 = float(range_match.group(1))
         p2 = float(range_match.group(2))
-        return max(p1, p2), min(p1, p2)
+        entry = max(p1, p2) if direction == "BUY" else min(p1, p2)
+    else:
+        entry_match = re.search(
+            r'(?:buy|sell|now|@|entry|limit)\s*[:\s]?\s*(4[0-9]{2,3}(?:\.[0-9]+)?)',
+            text, re.IGNORECASE
+        )
+        if entry_match:
+            entry = float(entry_match.group(1))
+        else:
+            prices = re.findall(r'\b4[0-9]{2,3}(?:\.[0-9]+)?\b', text)
+            entry = float(prices[0]) if prices else None
 
-    entry_match = re.search(
-        r'(?:buy|sell|now|@|entry|limit)\s*[:\s]?\s*(4[0-9]{2,3}(?:\.[0-9]+)?)',
-        text, re.IGNORECASE
-    )
-    if entry_match:
-        p = float(entry_match.group(1))
-        return p, p
+    if not entry:
+        return None
 
-    prices = re.findall(r'\b4[0-9]{2,3}(?:\.[0-9]+)?\b', text)
-    if prices:
-        p = float(prices[0])
-        return p, p
-
-    return None, None
-
-def extract_tps(text):
     tps = []
-    matches = re.finditer(
+    for m in re.finditer(
         r'(?:tp|target)\s*\d*\s*[:\s]?\s*(4[0-9]{2,3}(?:\.[0-9]+)?)',
         text, re.IGNORECASE
-    )
-    for m in matches:
+    ):
         val = m.group(1)
         if val.lower() != 'open':
             tps.append(float(val))
-    return tps
 
-def extract_sl(text):
     sl_match = re.search(
         r'(?:sl|stop\s*loss|stoploss)[:\s🚫☹️]*\s*(4[0-9]{2,3}(?:\.[0-9]+)?)',
         text, re.IGNORECASE
     )
-    if sl_match:
-        return float(sl_match.group(1))
-    return None
+    sl = float(sl_match.group(1)) if sl_match else None
 
-def get_direction(text):
-    if re.search(r'\bsell\b', text, re.IGNORECASE):
-        return "SELL"
-    if re.search(r'\bbuy\b', text, re.IGNORECASE):
-        return "BUY"
-    return None
+    if not sl or not tps:
+        return None
 
-def get_tp_number(text):
-    m = re.search(r'tp\s*(\d)', text, re.IGNORECASE)
-    if m:
-        return int(m.group(1))
-    return None
+    while len(tps) < 3:
+        tps.append(tps[-1])
 
-# ─────────────────────────────────────────────
-# SIGNAL DETECTION
-# ─────────────────────────────────────────────
-
-def is_new_signal(text):
-    has_direction = bool(re.search(r'\b(buy|sell)\b', text, re.IGNORECASE))
-    has_price = bool(re.search(r'\b4[0-9]{2,3}(?:\.[0-9]+)?\b', text))
-    has_tp = bool(re.search(r'\btp\b', text, re.IGNORECASE))
-    has_sl = bool(re.search(r'\b(sl|stop\s*loss)\b', text, re.IGNORECASE))
-    return has_direction and has_price and (has_tp or has_sl)
-
-def is_tp_hit(text):
-    has_tp_number = bool(re.search(r'\btp\s*\d', text, re.IGNORECASE))
-    if not has_tp_number:
-        return False
-    if is_new_signal(text):
-        return False
-    return True
-
-def is_secure_profits(text):
-    """Catches TP4+ and 'close now / secure profits' messages"""
-    has_tp4_plus = bool(re.search(r'\btp\s*[4-9]\b', text, re.IGNORECASE))
-    has_close_msg = bool(re.search(
-        r'\b(close\s*now|secure\s*(your\s*)?profits?|take\s*profits?|close\s*all|close\s*trade)\b',
-        text, re.IGNORECASE
-    ))
-    return has_tp4_plus or has_close_msg
-
-def is_sl_hit(text):
-    return bool(re.search(
-        r'\b(sl\s*hit|stop\s*loss\s*hit|stopped\s*out|setup\s*invalid|invalid\s*setup|closing\s*the\s*trade|cut\s*(the\s*)?trade|missed)\b',
-        text, re.IGNORECASE
-    ))
+    return {
+        "id": str(uuid.uuid4())[:8],
+        "pair": "XAUUSD",
+        "direction": direction,
+        "entry": round(entry, 2),
+        "sl": round(sl, 2),
+        "tp1": round(tps[0], 2),
+        "tp2": round(tps[1], 2),
+        "tp3": round(tps[2], 2),
+    }
 
 # ─────────────────────────────────────────────
-# FORMATTERS
+# ROUTES
 # ─────────────────────────────────────────────
 
-def format_signal(text):
-    direction = get_direction(text)
-    if not direction:
-        return None, None
+@app.route("/mt5_signal", methods=["GET"])
+def get_signal():
+    signal = load_signal()
+    logger.info(f"MT5 polled: {signal.get('id')} {signal.get('direction')}")
+    # Auto-clear after serving so EA doesn't execute same signal twice
+    if signal.get("direction") not in (None, "none"):
+        save_signal({"id": "none", "pair": "XAUUSD", "direction": "none"})
+        logger.info("Signal cleared after serving to MT5")
+    return jsonify(signal)
 
-    top_entry, bottom_entry = extract_entry(text)
-    tps = extract_tps(text)
-    sl = extract_sl(text)
+@app.route("/mt5_close", methods=["POST"])
+def close_signal():
+    data = request.json or {}
+    logger.info(f"MT5 close: {data}")
+    log_event({"type": "MT5_CLOSE", **data})
+    return jsonify({"status": "ok"})
 
-    if top_entry is None:
-        return None, None
+@app.route("/new_signal", methods=["POST"])
+def new_signal():
+    data = request.json or {}
+    text = data.get("text", "")
+    if not text:
+        return jsonify({"error": "no text"}), 400
+    signal = parse_signal(text)
+    if not signal:
+        return jsonify({"error": "could not parse"}), 422
+    save_signal(signal)
+    log_event({"type": "NEW_SIGNAL", **signal})
+    logger.info(f"✅ Signal saved: {signal}")
+    return jsonify({"status": "ok", "signal": signal})
 
-    if direction == "BUY":
-        entry_top = top_entry
-        entry_bottom = top_entry - 7
-    else:
-        entry_top = bottom_entry + 7
-        entry_bottom = bottom_entry
+@app.route("/clear_signal", methods=["POST"])
+def clear_signal():
+    save_signal({"id": "none", "pair": "XAUUSD", "direction": "none"})
+    return jsonify({"status": "cleared"})
 
-    emoji = "🟢" if direction == "BUY" else "🔴"
+@app.route("/status", methods=["GET"])
+def status():
+    signal = load_signal()
+    try:
+        with open(LOG_FILE, "r") as f:
+            logs = json.load(f)
+    except:
+        logs = []
+    return jsonify({"current_signal": signal, "recent_logs": logs[-10:]})
 
-    lines = [
-        f"{direction} {emoji}",
-        f"XAU/USD | GOLD",
-        f"",
-        f"ENTRY: {format_price(entry_top)} - {format_price(entry_bottom)}",
-        f"",
-    ]
+@app.route("/test-buy")
+def test_buy():
+    signal = {"id": "test01", "pair": "XAUUSD", "direction": "BUY",
+              "entry": 4340.00, "sl": 4325.00, "tp1": 4350.00, "tp2": 4360.00, "tp3": 4370.00}
+    save_signal(signal)
+    return jsonify({"status": "test BUY saved", "signal": signal})
 
-    if tps:
-        for i, tp in enumerate(tps, 1):
-            lines.append(f"✅ TP{i} {format_price(tp)}")
-        lines.append("")
+@app.route("/test-sell")
+def test_sell():
+    signal = {"id": "test02", "pair": "XAUUSD", "direction": "SELL",
+              "entry": 4350.00, "sl": 4365.00, "tp1": 4340.00, "tp2": 4330.00, "tp3": 4320.00}
+    save_signal(signal)
+    return jsonify({"status": "test SELL saved", "signal": signal})
 
-    if sl:
-        lines.append(f"🛑 SL {format_price(sl)}")
-
-    lines.append("")
-    lines.append("Use Appropriate Lot Sizes")
-
-    return "\n".join(lines), direction
-
-def format_tp_hit(text):
-    tp_num = get_tp_number(text)
-
-    if tp_num == 1:
-        return (
-            f"✅ TP1 HIT!\n"
-            f"XAU/USD | GOLD\n\n"
-            f"Close the trade or move SL to entry 🔒"
-        )
-    elif tp_num == 2:
-        return (
-            f"💥 TP2 HIT!\n"
-            f"XAU/USD | GOLD\n\n"
-            f"Secure partials and hold for more 🎯"
-        )
-    elif tp_num == 3:
-        return (
-            f"🔥🔥 TP3 DESTROYED!\n"
-            f"XAU/USD | GOLD\n\n"
-            f"What a trade! Close all positions 👑\n"
-            f"This is the power of Kevin's Gold VIP 💎"
-        )
-    else:
-        # TP4+ falls through to secure profits
-        return format_secure_profits()
-
-def format_secure_profits():
-    return (
-        f"💰 SECURE YOUR PROFITS!\n"
-        f"XAU/USD | GOLD\n\n"
-        f"Close your positions and bank those gains 🏆\n"
-        f"This is the power of Kevin's Gold VIP 💎"
-    )
-
-def format_sl_hit():
-    return (
-        f"❌ SL HIT\n"
-        f"XAU/USD | GOLD\n\n"
-        f"Setup invalid. We will be looking for more trades 🔍"
-    )
-
-# ─────────────────────────────────────────────
-# HANDLER
-# ─────────────────────────────────────────────
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.channel_post or update.message
-    if not message:
-        return
-
-    # Skip videos, documents, stickers, animations
-    if message.video or message.document or message.sticker or message.animation:
-        logger.info("Skipping non-text media message")
-        return
-
-    # Get text from plain message OR photo caption
-    text = None
-    if message.text:
-        text = message.text.strip()
-    elif message.photo and message.caption:
-        text = message.caption.strip()
-    elif message.photo and not message.caption:
-        logger.info("Skipping photo with no caption")
-        return
-    else:
-        return
-
-    chat_id = message.chat.id
-    logger.info(f"Message from chat {chat_id}")
-
-    if chat_id != HOLDING_CHANNEL:
-        return
-
-    logger.info(f"Processing: {text[:80]}")
-
-    state = load_state()
-    output = None
-
-    if is_new_signal(text):
-        output, direction = format_signal(text)
-        if output:
-            state["last_signal_direction"] = direction
-            save_state(state)
-            logger.info(f"Detected: NEW SIGNAL ({direction})")
-            # Also send to MT5 for auto execution
-            await send_to_mt5(text)
-
-    elif is_tp_hit(text):
-        output = format_tp_hit(text)
-        logger.info("Detected: TP HIT")
-
-    elif is_secure_profits(text):
-        output = format_secure_profits()
-        logger.info("Detected: SECURE PROFITS")
-
-    elif is_sl_hit(text):
-        output = format_sl_hit()
-        logger.info("Detected: SL HIT")
-
-    else:
-        logger.info("No pattern matched — skipping")
-        return
-
-    if output:
-        await context.bot.send_message(
-            chat_id=VIP_CHANNEL,
-            text=output
-        )
-        logger.info("Message sent to VIP channel ✅")
-
-# ─────────────────────────────────────────────
-# MAIN
-# ─────────────────────────────────────────────
-
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.ALL, handle_message))
-    logger.info("Bot started — listening for signals...")
-    app.run_polling(allowed_updates=["channel_post", "message"])
+@app.route("/")
+def home():
+    return jsonify({"status": "RayGoldSignals running ✅"})
 
 if __name__ == "__main__":
-    main()
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
