@@ -152,7 +152,7 @@ def is_secure_profits(text):
     """Catches TP4+ and 'close now / secure profits' messages"""
     has_tp4_plus = bool(re.search(r'\btp\s*[4-9]\b', text, re.IGNORECASE))
     has_close_msg = bool(re.search(
-        r'\b(close\s*now|secure\s*(your\s*)?profits?|take\s*profits?|close\s*all|close\s*trade)\b',
+        r'\b(close\s*(our|the|all|now|trade)|secure\s*(your\s*)?profits?|take\s*profits?|let.s\s*close|touch\s*and|pips\s*✅)\b',
         text, re.IGNORECASE
     ))
     return has_tp4_plus or has_close_msg
