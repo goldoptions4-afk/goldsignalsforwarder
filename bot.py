@@ -302,15 +302,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Full message log ───────────────────────────────────────────
     logger.info(f"📥 RECEIVED: {text[:150]}")
 
-    # ── Promotional TP detection ───────────────────────────────────
-    # Catches Forex Conquer style adverts like:
-    # "GOLD SELL HIT 1 TP 90+ pips from entry 4154 to 4145"
-    # "GOLD BUY Running 40+ pips Profit"
-    # These are NOT real TP hits — they're promoting their VIP
-    if re.search(r'\b(\d+\+?\s*pips?\s*(profit|running)|hit\s*\d+\s*tp\s*\d+\+?\s*pips?|running\s*\d+\+?\s*pips?)\b', text, re.IGNORECASE):
-        logger.info(f"📢 PROMOTIONAL MESSAGE SKIPPED: {text[:80]}")
-        return
-
     state = load_state()
     output = None
 
