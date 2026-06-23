@@ -11,12 +11,13 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 HOLDING_CHANNEL = int(os.environ.get("HOLDING_CHANNEL", "-1002083673417"))
+KEVINGOLD_CHANNEL = int(os.environ.get("KEVINGOLD_CHANNEL", "-1001673250065"))
 VIP_CHANNEL = int(os.environ.get("VIP_CHANNEL", "-1004347840465"))
 RAY_GOLD_URL = os.environ.get("RAY_GOLD_URL", "https://web-production-f54d0.up.railway.app")
 WHATSAPP_URL = os.environ.get("WHATSAPP_URL", "https://web-production-6cec8d.up.railway.app")
 
 # ─────────────────────────────────────────────
-# MT5 + WHATSAPP SENDERS
+# RAYGOLDSIGNALS — send signal to MT5
 # ─────────────────────────────────────────────
 
 async def send_to_mt5(text):
@@ -34,6 +35,7 @@ async def send_to_mt5(text):
         logger.error(f"❌ MT5 send error: {e}")
 
 async def send_to_whatsapp(message):
+    """Send message to WhatsApp client group"""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.post(
@@ -68,6 +70,7 @@ def save_state(state):
         logger.error(f"Failed to save state: {e}")
 
 def is_duplicate_signal(text, state):
+    """Prevent same signal firing twice within 60 seconds"""
     import hashlib, time
     h = hashlib.md5(text.encode()).hexdigest()[:8]
     now = time.time()
@@ -163,6 +166,7 @@ def is_tp_hit(text):
     return True
 
 def is_secure_profits(text):
+    """Catches TP4+ and 'close now / secure profits' messages"""
     has_tp4_plus = bool(re.search(r'\btp\s*[4-9]\b', text, re.IGNORECASE))
     has_close_msg = bool(re.search(
         r'\b(close\s*(our|the|all|now|trade)|secure\s*(your\s*)?profits?|take\s*profits?|let.s\s*close|touch\s*and|pips\s*✅)\b',
@@ -245,6 +249,7 @@ def format_tp_hit(text):
             f"This is the power of Kevin's Gold VIP 💎"
         )
     else:
+        # TP4+ falls through to secure profits
         return format_secure_profits()
 
 def format_secure_profits():
@@ -271,10 +276,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not message:
         return
 
+    # Skip videos, documents, stickers, animations
     if message.video or message.document or message.sticker or message.animation:
         logger.info("Skipping non-text media message")
         return
 
+    # Get text from plain message OR photo caption
     text = None
     if message.text:
         text = message.text.strip()
@@ -287,14 +294,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = message.chat.id
-    if chat_id != HOLDING_CHANNEL:
+    logger.info(f"Message from chat {chat_id}")
+
+    if chat_id not in (HOLDING_CHANNEL, KEVINGOLD_CHANNEL):
         return
 
+    # ── Full message log ───────────────────────────────────────────
     logger.info(f"📥 RECEIVED: {text[:150]}")
 
-    # Skip promotional messages
+    # ── Promotional TP detection ───────────────────────────────────
+    # Catches Forex Conquer style adverts like:
+    # "GOLD SELL HIT 1 TP 90+ pips from entry 4154 to 4145"
+    # "GOLD BUY Running 40+ pips Profit"
+    # These are NOT real TP hits — they're promoting their VIP
     if re.search(r'\b(\d+\+?\s*pips?\s*(profit|running)|hit\s*\d+\s*tp\s*\d+\+?\s*pips?|running\s*\d+\+?\s*pips?)\b', text, re.IGNORECASE):
-        logger.info(f"📢 PROMOTIONAL MESSAGE SKIPPED")
+        logger.info(f"📢 PROMOTIONAL MESSAGE SKIPPED: {text[:80]}")
         return
 
     state = load_state()
@@ -309,6 +323,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state["last_signal_direction"] = direction
             save_state(state)
             logger.info(f"Detected: NEW SIGNAL ({direction})")
+            # Also send to MT5 for auto execution
             await send_to_mt5(text)
 
     elif is_tp_hit(text):
