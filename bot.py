@@ -34,16 +34,19 @@ async def send_to_mt5(text):
     except Exception as e:
         logger.error(f"❌ MT5 send error: {e}")
 
-async def send_to_whatsapp(message):
-    """Send message to WhatsApp client group"""
+async def send_to_whatsapp(message, group=None):
+    """Send message to WhatsApp — specific group or all groups"""
     try:
+        payload = {"message": message}
+        if group:
+            payload["group"] = group
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.post(
                 f"{WHATSAPP_URL}/send",
-                json={"message": message}
+                json=payload
             )
             if r.status_code == 200:
-                logger.info(f"✅ Message sent to WhatsApp")
+                logger.info(f"✅ Message sent to WhatsApp{' → ' + group if group else ''}")
             else:
                 logger.warning(f"⚠️ WhatsApp send failed: {r.status_code} {r.text}")
     except Exception as e:
@@ -296,10 +299,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = message.chat.id
     logger.info(f"Message from chat {chat_id}")
 
-    if chat_id not in (HOLDING_CHANNEL, KEVINGOLD_CHANNEL):
+    # ── CHANNEL 1: -1001673250065 (kevingoldsignals) ──────────────
+    # Already formatted — forward as-is to ALL 4 WhatsApp groups
+    if chat_id == KEVINGOLD_CHANNEL:
+        logger.info(f"📤 kevingoldsignals → ALL WhatsApp groups: {text[:80]}")
+        await send_to_whatsapp(text)
         return
 
-    # ── Full message log ───────────────────────────────────────────
+    # ── CHANNEL 2: -1004347840465 (testingtradesfiltered/VIP) ─────
+    # Already formatted — send to PREMIUM GOLD GROUP + MT5
+    if chat_id == VIP_CHANNEL:
+        logger.info(f"📤 VIP → PREMIUM GOLD GROUP + MT5: {text[:80]}")
+        await send_to_whatsapp(text, group="PREMIUM GOLD GROUP")
+        await send_to_mt5(text)
+        return
+
+    # ── HOLDING CHANNEL: filter & reformat ────────────────────────
+    if chat_id != HOLDING_CHANNEL:
+        return
+
     logger.info(f"📥 RECEIVED: {text[:150]}")
 
     state = load_state()
@@ -314,8 +332,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state["last_signal_direction"] = direction
             save_state(state)
             logger.info(f"Detected: NEW SIGNAL ({direction})")
-            # Also send to MT5 for auto execution
-            await send_to_mt5(text)
 
     elif is_tp_hit(text):
         output = format_tp_hit(text)
@@ -340,9 +356,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text=output
         )
         logger.info("Message sent to VIP channel ✅")
-
-        # Send to WhatsApp client group
-        await send_to_whatsapp(output)
 
 # ─────────────────────────────────────────────
 # MAIN
