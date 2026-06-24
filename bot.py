@@ -34,12 +34,14 @@ async def send_to_mt5(text):
     except Exception as e:
         logger.error(f"❌ MT5 send error: {e}")
 
-async def send_to_whatsapp(message, group=None):
-    """Send message to WhatsApp — specific group or all groups"""
+async def send_to_whatsapp(message, group=None, image_url=None):
+    """Send message to WhatsApp — specific group or all groups, with optional image"""
     try:
         payload = {"message": message}
         if group:
             payload["group"] = group
+        if image_url:
+            payload["image_url"] = image_url
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.post(
                 f"{WHATSAPP_URL}/send",
@@ -303,8 +305,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Already formatted — forward as-is to all 4 WhatsApp groups
     if chat_id == KEVINGOLD_CHANNEL:
         logger.info(f"📤 kevingoldsignals → ALL WhatsApp groups: {text[:80]}")
+        # Extract image URL — check direct photo, forward, and effective_attachment
+        image_url = None
+        photo = None
+        if message.photo:
+            photo = message.photo[-1]
+        elif message.effective_attachment and hasattr(message.effective_attachment, '__iter__'):
+            try:
+                photo = list(message.effective_attachment)[-1]
+            except:
+                pass
+        elif hasattr(message, 'forward_origin') and message.forward_origin:
+            if message.photo:
+                photo = message.photo[-1]
+
+        if photo:
+            try:
+                photo_file = await context.bot.get_file(photo.file_id)
+                image_url = photo_file.file_path
+                logger.info(f"📷 Image detected: {image_url}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not get image file: {e}")
+        else:
+            logger.info("📝 No image found in message")
+
         for group in ['PREMIUM GOLD GROUP', 'GOLD | BITCOIN | SIGNALS GROUP', 'WINNERS GOLD SIGNAL', "Kevin's GOLD & BTC SIGNALS"]:
-            await send_to_whatsapp(text, group=group)
+            await send_to_whatsapp(text, group=group, image_url=image_url)
         return
 
     # ── CHANNEL: -1004347840465 (testingtradesfiltered) ──────────
