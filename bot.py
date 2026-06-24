@@ -300,14 +300,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Message from chat {chat_id}")
 
     # ── CHANNEL 1: -1001673250065 (kevingoldsignals) ──────────────
-    # Already formatted — forward as-is to ALL 4 WhatsApp groups
+    # Already formatted — forward as-is to all 4 WhatsApp groups
     if chat_id == KEVINGOLD_CHANNEL:
         logger.info(f"📤 kevingoldsignals → ALL WhatsApp groups: {text[:80]}")
-        await send_to_whatsapp(text)
+        for group in ['PREMIUM GOLD GROUP', 'GOLD | BITCOIN | SIGNALS GROUP', 'WINNERS GOLD SIGNAL', "Kevin's GOLD & BTC SIGNALS"]:
+            await send_to_whatsapp(text, group=group)
         return
 
-    # ── CHANNEL 2: -1004347840465 (testingtradesfiltered/VIP) ─────
-    # Already formatted — send to PREMIUM GOLD GROUP + MT5
+    # ── CHANNEL 2: -1004347840465 (VIP) ──────────────────────────
+    # Already formatted — send to PREMIUM GOLD GROUP only + MT5
     if chat_id == VIP_CHANNEL:
         logger.info(f"📤 VIP → PREMIUM GOLD GROUP + MT5: {text[:80]}")
         await send_to_whatsapp(text, group="PREMIUM GOLD GROUP")
