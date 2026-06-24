@@ -307,10 +307,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_to_whatsapp(text, group=group)
         return
 
-    # ── CHANNEL 2: -1004347840465 (VIP) ──────────────────────────
-    # Already formatted — send to PREMIUM GOLD GROUP only + MT5
+    # ── CHANNEL: -1004347840465 (testingtradesfiltered) ──────────
+    # Already formatted — send to PREMIUM GOLD GROUP + MT5 only
     if chat_id == VIP_CHANNEL:
-        logger.info(f"📤 VIP → PREMIUM GOLD GROUP + MT5: {text[:80]}")
+        logger.info(f"📤 testingtradesfiltered → PREMIUM GOLD GROUP + MT5: {text[:80]}")
         await send_to_whatsapp(text, group="PREMIUM GOLD GROUP")
         await send_to_mt5(text)
         return
@@ -357,6 +357,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text=output
         )
         logger.info("Message sent to VIP channel ✅")
+
+        # Send to WhatsApp PREMIUM GOLD GROUP directly
+        await send_to_whatsapp(output, group="PREMIUM GOLD GROUP")
+        logger.info("Message sent to WhatsApp PREMIUM GOLD GROUP ✅")
+
+        # Send to MT5 server
+        await send_to_mt5(output)
+        logger.info("Message sent to MT5 ✅")
 
 # ─────────────────────────────────────────────
 # MAIN
