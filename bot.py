@@ -329,8 +329,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             logger.info("📝 No image found in message")
 
-        for group in ['PREMIUM GOLD GROUP', 'GOLD | BITCOIN | SIGNALS GROUP', 'WINNERS GOLD SIGNAL', "Kevin's GOLD & BTC SIGNALS"]:
-            await send_to_whatsapp(text, group=group, image_url=image_url)
+        # Send to all groups at once — no filtering needed
+        await send_to_whatsapp(text, image_url=image_url)
         return
 
     # ── CHANNEL: -1004347840465 (testingtradesfiltered) ──────────
