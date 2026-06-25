@@ -22,6 +22,8 @@ WHATSAPP_URL = os.environ.get("WHATSAPP_URL", "https://web-production-6cec8d.up.
 
 async def send_to_mt5(text):
     try:
+        # Strip backticks (Telegram monospace formatting)
+        text = text.replace('`', '')
         async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.post(
                 f"{RAY_GOLD_URL}/new_signal",
@@ -95,7 +97,7 @@ def format_price(p):
 
 def extract_entry(text):
     range_match = re.search(
-        r'(4[0-9]{2,3}(?:\.[0-9]+)?)\s*[-–]\s*(4[0-9]{2,3}(?:\.[0-9]+)?)', text
+        r'([3-9][0-9]{2,3}(?:\.[0-9]+)?)\s*[-–]\s*([3-9][0-9]{2,3}(?:\.[0-9]+)?)', text
     )
     if range_match:
         p1 = float(range_match.group(1))
@@ -103,14 +105,14 @@ def extract_entry(text):
         return max(p1, p2), min(p1, p2)
 
     entry_match = re.search(
-        r'(?:buy|sell|now|@|entry|limit)\s*[:\s]?\s*(4[0-9]{2,3}(?:\.[0-9]+)?)',
+        r'(?:buy|sell|now|@|entry|limit)\s*[:\s]?\s*([3-9][0-9]{2,3}(?:\.[0-9]+)?)',
         text, re.IGNORECASE
     )
     if entry_match:
         p = float(entry_match.group(1))
         return p, p
 
-    prices = re.findall(r'\b4[0-9]{2,3}(?:\.[0-9]+)?\b', text)
+    prices = re.findall(r'\b[3-9][0-9]{2,3}(?:\.[0-9]+)?\b', text)
     if prices:
         p = float(prices[0])
         return p, p
@@ -120,7 +122,7 @@ def extract_entry(text):
 def extract_tps(text):
     tps = []
     matches = re.finditer(
-        r'(?:tp|target)\s*\d*\s*[:\s]?\s*(4[0-9]{2,3}(?:\.[0-9]+)?)',
+        r'(?:tp|target)\s*\d*\s*[:\s]?\s*([3-9][0-9]{2,3}(?:\.[0-9]+)?)',
         text, re.IGNORECASE
     )
     for m in matches:
@@ -129,9 +131,23 @@ def extract_tps(text):
             tps.append(float(val))
     return tps
 
+def extract_all_tps(text):
+    """Extract ALL TPs including TP4, TP5 etc — skip 'Open' and non-numeric values"""
+    tps = []
+    # Match TP followed by optional number, then a price value
+    for m in re.finditer(
+        r'(?:tp|target)\s*\d*\s*[:\s]?\s*([^\n\r,]+)',
+        text, re.IGNORECASE
+    ):
+        val = m.group(1).strip().replace('`', '')
+        # Skip if 'open', 'hold', or not a number
+        if re.match(r'^[3-9][0-9]{2,3}(?:\.[0-9]+)?$', val):
+            tps.append(float(val))
+    return tps
+
 def extract_sl(text):
     sl_match = re.search(
-        r'(?:sl|stop\s*loss|stoploss)[:\s🚫☹️]*\s*(4[0-9]{2,3}(?:\.[0-9]+)?)',
+        r'(?:sl|stop\s*loss|stoploss)[:\s🚫☹️]*\s*([3-9][0-9]{2,3}(?:\.[0-9]+)?)',
         text, re.IGNORECASE
     )
     if sl_match:
@@ -157,7 +173,7 @@ def get_tp_number(text):
 
 def is_new_signal(text):
     has_direction = bool(re.search(r'\b(buy|sell)\b', text, re.IGNORECASE))
-    has_price = bool(re.search(r'\b4[0-9]{2,3}(?:\.[0-9]+)?\b', text))
+    has_price = bool(re.search(r'\b[3-9][0-9]{2,3}(?:\.[0-9]+)?\b', text))
     has_tp = bool(re.search(r'\btp\b', text, re.IGNORECASE))
     has_sl = bool(re.search(r'\b(sl|stop\s*loss)\b', text, re.IGNORECASE))
     return has_direction and has_price and (has_tp or has_sl)
@@ -171,7 +187,9 @@ def is_tp_hit(text):
     return True
 
 def is_secure_profits(text):
-    """Catches TP4+ and 'close now / secure profits' messages"""
+    """Catches TP4+ and 'close now / secure profits' messages — but NOT new signals"""
+    if is_new_signal(text):
+        return False
     has_tp4_plus = bool(re.search(r'\btp\s*[4-9]\b', text, re.IGNORECASE))
     has_close_msg = bool(re.search(
         r'\b(close\s*(our|the|all|now|trade)|secure\s*(your\s*)?profits?|take\s*profits?|let.s\s*close|touch\s*and|pips\s*✅)\b',
@@ -195,7 +213,7 @@ def format_signal(text):
         return None, None
 
     top_entry, bottom_entry = extract_entry(text)
-    tps = extract_tps(text)
+    tps = extract_all_tps(text)
     sl = extract_sl(text)
 
     if top_entry is None:
@@ -336,8 +354,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── CHANNEL: -1004347840465 (testingtradesfiltered) ──────────
     # Already formatted — send to PREMIUM GOLD GROUP + MT5 only
     if chat_id == VIP_CHANNEL:
-        logger.info(f"📤 testingtradesfiltered → PREMIUM GOLD GROUP + MT5: {text[:80]}")
-        await send_to_whatsapp(text, group="PREMIUM GOLD GROUP")
+        logger.info(f"📤 testingtradesfiltered → MT5 only (WhatsApp PAUSED): {text[:80]}")
+        # PAUSED: await send_to_whatsapp(text, group="PREMIUM GOLD GROUP")
         await send_to_mt5(text)
         return
 
@@ -384,13 +402,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         logger.info("Message sent to VIP channel ✅")
 
-        # Send to WhatsApp PREMIUM GOLD GROUP directly
-        await send_to_whatsapp(output, group="PREMIUM GOLD GROUP")
-        logger.info("Message sent to WhatsApp PREMIUM GOLD GROUP ✅")
+        # PAUSED: send to WhatsApp PREMIUM GOLD GROUP
+        # await send_to_whatsapp(output, group="PREMIUM GOLD GROUP")
+        # logger.info("Message sent to WhatsApp PREMIUM GOLD GROUP ✅")
 
-        # Send to MT5 server
-        await send_to_mt5(output)
-        logger.info("Message sent to MT5 ✅")
+        # MT5 handled by testingtradesfiltered channel only — not here
 
 # ─────────────────────────────────────────────
 # MAIN
