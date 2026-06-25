@@ -73,7 +73,7 @@ async def fetch_chart_image():
                 },
                 json={
                     "symbol": "OANDA:XAUUSD",
-                    "interval": "5",
+                    "interval": "5m",
                     "theme": "dark",
                     "width": 800,
                     "height": 500
