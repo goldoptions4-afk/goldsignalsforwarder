@@ -483,7 +483,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # await send_to_whatsapp(output, group="PREMIUM GOLD GROUP")
             # logger.info("Message sent to WhatsApp PREMIUM GOLD GROUP ✅")
 
-        # MT5 handled by testingtradesfiltered channel only — not here
+        # Send formatted signal to MT5
+        if is_new_signal(text):
+            await send_to_mt5(output)
+            logger.info("Formatted signal sent to MT5 ✅")
 
 # ─────────────────────────────────────────────
 # MAIN
