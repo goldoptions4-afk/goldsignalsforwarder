@@ -469,9 +469,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=output
             )
             logger.info("Message + chart sent to VIP channel ✅")
-            # PAUSED: send to WhatsApp PREMIUM GOLD GROUP
-            # await send_to_whatsapp(output, group="PREMIUM GOLD GROUP")
-            # logger.info("Message sent to WhatsApp PREMIUM GOLD GROUP ✅")
         else:
             # Fallback — send text only if chart fetch failed
             await context.bot.send_message(
@@ -479,9 +476,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=output
             )
             logger.info("Message sent to VIP channel (no chart) ✅")
-            # PAUSED: send to WhatsApp PREMIUM GOLD GROUP
-            # await send_to_whatsapp(output, group="PREMIUM GOLD GROUP")
-            # logger.info("Message sent to WhatsApp PREMIUM GOLD GROUP ✅")
+
+        # Send EVERYTHING to WhatsApp Dummy group testing (mirrors testingtradesfiltered)
+        await send_to_whatsapp(output, group="Dummy group testing")
+        # PAUSED: await send_to_whatsapp(output, group="PREMIUM GOLD GROUP")
+        logger.info("Message sent to WhatsApp Dummy group testing ✅")
 
         # Send formatted signal to MT5
         if is_new_signal(text):
