@@ -10,6 +10,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CHART_IMG_API_KEY = os.environ.get("CHART_IMG_API_KEY", "GhKjWUCZA61Lx0OwoNZvp8AhcLtTkWee702zMySE")
 HOLDING_CHANNEL = int(os.environ.get("HOLDING_CHANNEL", "-1002083673417"))
 KEVINGOLD_CHANNEL = int(os.environ.get("KEVINGOLD_CHANNEL", "-1001673250065"))
 VIP_CHANNEL = int(os.environ.get("VIP_CHANNEL", "-1004347840465"))
@@ -55,6 +56,38 @@ async def send_to_whatsapp(message, group=None, image_url=None):
                 logger.warning(f"⚠️ WhatsApp send failed: {r.status_code} {r.text}")
     except Exception as e:
         logger.error(f"❌ WhatsApp send error: {e}")
+
+# ─────────────────────────────────────────────
+# CHART IMAGE
+# ─────────────────────────────────────────────
+
+async def fetch_chart_image():
+    """Fetch XAUUSD 5m chart from chart-img.com and return image bytes"""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post(
+                "https://api.chart-img.com/v2/tradingview/advanced-chart",
+                headers={
+                    "x-api-key": CHART_IMG_API_KEY,
+                    "content-type": "application/json"
+                },
+                json={
+                    "symbol": "OANDA:XAUUSD",
+                    "interval": "5",
+                    "theme": "dark",
+                    "width": 800,
+                    "height": 500
+                }
+            )
+            if r.status_code == 200:
+                logger.info("✅ Chart image fetched from chart-img.com")
+                return r.content
+            else:
+                logger.warning(f"⚠️ Chart-img failed: {r.status_code} {r.text[:100]}")
+                return None
+    except Exception as e:
+        logger.error(f"❌ Chart fetch error: {e}")
+        return None
 
 # ─────────────────────────────────────────────
 # STATE
@@ -207,6 +240,26 @@ def is_sl_hit(text):
 # FORMATTERS
 # ─────────────────────────────────────────────
 
+def apply_tp_override(tps, entry, direction):
+    """
+    Always override TP1 and TP2:
+    BUY:  TP1 = entry + 2, TP2 = entry + 3
+    SELL: TP1 = entry - 2, TP2 = entry - 3
+    TP3+ keep original values
+    """
+    if direction == "BUY":
+        tp1 = round(entry + 2, 2)
+        tp2 = round(entry + 3, 2)
+    else:
+        tp1 = round(entry - 2, 2)
+        tp2 = round(entry - 3, 2)
+
+    result = [tp1, tp2]
+    # Add TP3+ from original if they exist
+    if len(tps) > 2:
+        result += tps[2:]
+    return result
+
 def format_signal(text):
     direction = get_direction(text)
     if not direction:
@@ -222,9 +275,16 @@ def format_signal(text):
     if direction == "BUY":
         entry_top = top_entry
         entry_bottom = top_entry - 7
+        # Use top entry as reference for TP override
+        ref_entry = top_entry
     else:
         entry_top = bottom_entry + 7
         entry_bottom = bottom_entry
+        # Use bottom entry as reference for TP override
+        ref_entry = bottom_entry
+
+    # Apply TP1/TP2 override rule
+    tps = apply_tp_override(tps, ref_entry, direction)
 
     emoji = "🟢" if direction == "BUY" else "🔴"
 
@@ -395,16 +455,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if output:
-        # Send to Telegram VIP channel
-        await context.bot.send_message(
-            chat_id=VIP_CHANNEL,
-            text=output
-        )
-        logger.info("Message sent to VIP channel ✅")
+        # Fetch chart image
+        chart_bytes = None
+        if is_new_signal(text):
+            chart_bytes = await fetch_chart_image()
 
-        # PAUSED: send to WhatsApp PREMIUM GOLD GROUP
-        # await send_to_whatsapp(output, group="PREMIUM GOLD GROUP")
-        # logger.info("Message sent to WhatsApp PREMIUM GOLD GROUP ✅")
+        if chart_bytes:
+            # Send as photo with caption to Telegram VIP channel
+            from io import BytesIO
+            await context.bot.send_photo(
+                chat_id=VIP_CHANNEL,
+                photo=BytesIO(chart_bytes),
+                caption=output
+            )
+            logger.info("Message + chart sent to VIP channel ✅")
+            # PAUSED: send to WhatsApp PREMIUM GOLD GROUP
+            # await send_to_whatsapp(output, group="PREMIUM GOLD GROUP")
+            # logger.info("Message sent to WhatsApp PREMIUM GOLD GROUP ✅")
+        else:
+            # Fallback — send text only if chart fetch failed
+            await context.bot.send_message(
+                chat_id=VIP_CHANNEL,
+                text=output
+            )
+            logger.info("Message sent to VIP channel (no chart) ✅")
+            # PAUSED: send to WhatsApp PREMIUM GOLD GROUP
+            # await send_to_whatsapp(output, group="PREMIUM GOLD GROUP")
+            # logger.info("Message sent to WhatsApp PREMIUM GOLD GROUP ✅")
 
         # MT5 handled by testingtradesfiltered channel only — not here
 
