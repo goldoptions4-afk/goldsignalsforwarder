@@ -165,17 +165,15 @@ def extract_tps(text):
     return tps
 
 def extract_all_tps(text):
-    """Extract ALL TPs including TP4, TP5 etc — skip 'Open' and non-numeric values"""
+    """Extract ALL TPs — handles TP1 4000, TP : 4000, TP 4000 formats"""
     tps = []
-    # Match TP followed by optional number, then a price value
     for m in re.finditer(
-        r'(?:tp|target)\s*\d*\s*[:\s]?\s*([^\n\r,]+)',
+        r'\btp\s*(?:\d{1,2}\s*)?[:\s]?\s*([3-9][0-9]{3}(?:\.[0-9]+)?)',
         text, re.IGNORECASE
     ):
-        val = m.group(1).strip().replace('`', '')
-        # Skip if 'open', 'hold', or not a number
-        if re.match(r'^[3-9][0-9]{2,3}(?:\.[0-9]+)?$', val):
-            tps.append(float(val))
+        val = float(m.group(1))
+        if val not in tps:
+            tps.append(val)
     return tps
 
 def extract_sl(text):
@@ -258,11 +256,15 @@ def is_sl_hit(text):
 
 def apply_tp_override(tps, entry, direction):
     """
-    Always override TP1 and TP2:
+    Only override TP1 and TP2 if there are 2+ TPs:
     BUY:  TP1 = entry + 2, TP2 = entry + 3
     SELL: TP1 = entry - 2, TP2 = entry - 3
-    TP3+ keep original values
+    If only 1 TP → keep original
+    TP3+ always keep original values
     """
+    if len(tps) <= 1:
+        return tps  # 1 TP or none — keep as is
+
     if direction == "BUY":
         tp1 = round(entry + 2, 2)
         tp2 = round(entry + 3, 2)
@@ -271,7 +273,6 @@ def apply_tp_override(tps, entry, direction):
         tp2 = round(entry - 3, 2)
 
     result = [tp1, tp2]
-    # Add TP3+ from original if they exist
     if len(tps) > 2:
         result += tps[2:]
     return result
@@ -290,13 +291,11 @@ def format_signal(text):
 
     if direction == "BUY":
         entry_top = top_entry
-        entry_bottom = top_entry - 7
-        # Use top entry as reference for TP override
+        entry_bottom = round(top_entry - 5, 2)  # always 5 points range
         ref_entry = top_entry
     else:
-        entry_top = bottom_entry + 7
+        entry_top = round(bottom_entry + 5, 2)  # always 5 points range
         entry_bottom = bottom_entry
-        # Use bottom entry as reference for TP override
         ref_entry = bottom_entry
 
     # Apply TP1/TP2 override rule
