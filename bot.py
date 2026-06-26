@@ -192,6 +192,20 @@ def get_direction(text):
         return "SELL"
     if re.search(r'\bbuy\b', text, re.IGNORECASE):
         return "BUY"
+    if re.search(r'\bse\b', text, re.IGNORECASE):
+        return "SELL"
+    if re.search(r'\bbu\b', text, re.IGNORECASE):
+        return "BUY"
+    # Infer from TP/SL relationship
+    sl_match = re.search(r'\bsl\s*[:\s]*([3-9][0-9]{2,3}(?:\.[0-9]+)?)', text, re.IGNORECASE)
+    tp_match = re.search(r'\btp\s*[\d:\s]*([3-9][0-9]{2,3}(?:\.[0-9]+)?)', text, re.IGNORECASE)
+    prices = re.findall(r'\b([3-9][0-9]{2,3}(?:\.[0-9]+)?)\b', text)
+    if sl_match and tp_match and prices:
+        sl = float(sl_match.group(1))
+        tp = float(tp_match.group(1))
+        first_price = float(prices[0])
+        if tp < first_price and sl > first_price: return "SELL"
+        if tp > first_price and sl < first_price: return "BUY"
     return None
 
 def get_tp_number(text):
