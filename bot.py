@@ -209,7 +209,9 @@ def is_new_signal(text):
     has_price = bool(re.search(r'\b[3-9][0-9]{2,3}(?:\.[0-9]+)?\b', text))
     has_tp = bool(re.search(r'\btp\b', text, re.IGNORECASE))
     has_sl = bool(re.search(r'\b(sl|stop\s*loss)\b', text, re.IGNORECASE))
-    return has_direction and has_price and (has_tp or has_sl)
+    has_entry = bool(re.search(r'\b(entry|zone|buy\s*zone|sell\s*zone|now)\b', text, re.IGNORECASE)) or                 bool(re.search(r'[3-9][0-9]{2,3}(?:\.[0-9]+)?\s*[-–]\s*[3-9][0-9]{2,3}(?:\.[0-9]+)?', text))
+    # Must have direction + price range/entry + TP + SL — all 4
+    return has_direction and has_price and has_tp and has_sl and has_entry
 
 def is_tp_hit(text):
     has_tp_number = bool(re.search(r'\btp\s*\d', text, re.IGNORECASE))
