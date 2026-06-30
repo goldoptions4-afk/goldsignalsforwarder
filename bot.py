@@ -36,21 +36,24 @@ async def send_to_mt5(text):
     except Exception as e:
         logger.error(f"❌ MT5 send error: {e}")
 
-async def send_to_whatsapp(message, group=None, image_url=None):
-    """Send message to WhatsApp — specific group or all groups, with optional image"""
+async def send_to_whatsapp(message, group=None, image_url=None, video_url=None):
+    """Send message to WhatsApp — specific group or all groups, with optional image or video"""
     try:
         payload = {"message": message}
         if group:
             payload["group"] = group
         if image_url:
             payload["image_url"] = image_url
+        if video_url:
+            payload["video_url"] = video_url
         async with httpx.AsyncClient(timeout=15.0) as client:
             r = await client.post(
                 f"{WHATSAPP_URL}/send",
                 json=payload
             )
             if r.status_code == 200:
-                logger.info(f"✅ Message sent to WhatsApp{' → ' + group if group else ''}" + (" (with image)" if image_url else ""))
+                media_note = " (with video)" if video_url else (" (with image)" if image_url else "")
+                logger.info(f"✅ Message sent to WhatsApp{' → ' + group if group else ''}{media_note}")
             else:
                 logger.warning(f"⚠️ WhatsApp send failed: {r.status_code} {r.text}")
     except Exception as e:
@@ -243,7 +246,7 @@ def get_tp_number(text):
 
 def is_new_signal(text):
     has_direction = bool(re.search(r'\b(buy|sell|bu|se)\b', text, re.IGNORECASE))
-    has_tp = bool(re.search(r'\btp[^0-9]*([3-9][0-9]{3}(?:\.[0-9]+)?)', text, re.IGNORECASE))
+    has_tp = bool(re.search(r'\btp\s*\d{0,2}[^0-9]*([3-9][0-9]{3}(?:\.[0-9]+)?)', text, re.IGNORECASE))
     has_sl = bool(re.search(r'\bsl[^0-9]*([3-9][0-9]{3}(?:\.[0-9]+)?)', text, re.IGNORECASE))
     return has_direction and has_tp and has_sl
 
@@ -386,8 +389,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not message:
         return
 
-    if message.video or message.document or message.sticker or message.animation:
+    chat_id = message.chat.id
+
+    # Skip non-text media (stickers, docs, animations) everywhere, and
+    # skip video everywhere EXCEPT kevingoldsignals, which now supports it.
+    if message.document or message.sticker or message.animation:
         logger.info("Skipping non-text media message")
+        return
+    if message.video and chat_id != KEVINGOLD_CHANNEL:
+        logger.info("Skipping video — only kevingoldsignals channel supports video")
         return
 
     text = None
@@ -395,13 +405,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = message.text.strip()
     elif message.photo and message.caption:
         text = message.caption.strip()
+    elif message.video and message.caption:
+        text = message.caption.strip()
     elif message.photo and not message.caption:
         logger.info("Skipping photo with no caption")
+        return
+    elif message.video and not message.caption:
+        logger.info("Skipping video with no caption")
         return
     else:
         return
 
-    chat_id = message.chat.id
     logger.info(f"Message from chat {chat_id}")
 
     # ── CHANNEL 1: -1001673250065 (kevingoldsignals) ──────────────
@@ -409,6 +423,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"📤 kevingoldsignals → ALL WhatsApp groups: {text[:80]}")
         # Extract image URL — check direct photo, forward, and effective_attachment
         image_url = None
+        video_url = None
         photo = None
         if message.photo:
             photo = message.photo[-1]
@@ -428,11 +443,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.info(f"📷 Image detected: {image_url}")
             except Exception as e:
                 logger.warning(f"⚠️ Could not get image file: {e}")
+        elif message.video:
+            try:
+                video_file = await context.bot.get_file(message.video.file_id)
+                video_url = video_file.file_path  # full https://api.telegram.org/... URL
+                logger.info(f"🎥 Video detected: {video_url} ({message.video.file_size} bytes)")
+            except Exception as e:
+                # Telegram bot API caps file downloads at 20MB — large videos land here
+                logger.warning(f"⚠️ Could not get video file (possibly over Telegram's 20MB bot API limit): {e}")
         else:
-            logger.info("📝 No image found in message")
+            logger.info("📝 No image or video found in message")
 
         # Send to all groups at once — no filtering needed
-        await send_to_whatsapp(text, image_url=image_url)
+        await send_to_whatsapp(text, image_url=image_url, video_url=video_url)
         return
 
     # ── CHANNEL: -1004347840465 (testingtradesfiltered) ──────────
