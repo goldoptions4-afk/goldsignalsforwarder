@@ -345,22 +345,21 @@ def format_tp_hit(text):
 
     if tp_num == 1:
         return (
-            f"✅ TP1 HIT!\n"
-            f"XAU/USD | GOLD\n\n"
-            f"Close the trade or move SL to entry 🔒"
+            f"GOLD SMASHED TP1 ✅✅✅\n\n"
+            f"Close your positions or move SL to Break Even 🔒\n\n"
+            f"Want trades like this in your account automatically? Join our Gold Account Management 💰"
         )
     elif tp_num == 2:
         return (
-            f"💥 TP2 HIT!\n"
-            f"XAU/USD | GOLD\n\n"
-            f"Secure partials and hold for more 🎯"
+            f"GOLD SMASHED TP2 ✅✅✅✅\n\n"
+            f"Close remaining positions or move SL to Break Even 🔒\n\n"
+            f"Stop watching trades — let us execute them for you. Join Gold Account Management 💰"
         )
     elif tp_num == 3:
         return (
-            f"🔥🔥 TP3 DESTROYED!\n"
-            f"XAU/USD | GOLD\n\n"
-            f"What a trade! Close all positions 👑\n"
-            f"This is the power of Kevin's Gold VIP 💎"
+            f"GOLD SMASHED TP3 ✅✅✅✅✅\n\n"
+            f"Close all positions and lock in your profits 🔒\n\n"
+            f"This is what Gold Account Management does for our clients — every single trade, automatically in your account. Join now 💰"
         )
     else:
         return format_secure_profits()
