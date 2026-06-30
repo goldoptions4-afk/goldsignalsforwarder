@@ -23,7 +23,6 @@ WHATSAPP_URL = os.environ.get("WHATSAPP_URL", "https://web-production-6cec8d.up.
 
 async def send_to_mt5(text):
     try:
-        # Strip backticks (Telegram monospace formatting)
         text = text.replace('`', '')
         async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.post(
@@ -45,17 +44,44 @@ async def send_to_whatsapp(message, group=None, image_url=None):
             payload["group"] = group
         if image_url:
             payload["image_url"] = image_url
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             r = await client.post(
                 f"{WHATSAPP_URL}/send",
                 json=payload
             )
             if r.status_code == 200:
-                logger.info(f"✅ Message sent to WhatsApp{' → ' + group if group else ''}")
+                logger.info(f"✅ Message sent to WhatsApp{' → ' + group if group else ''}" + (" (with image)" if image_url else ""))
             else:
                 logger.warning(f"⚠️ WhatsApp send failed: {r.status_code} {r.text}")
     except Exception as e:
         logger.error(f"❌ WhatsApp send error: {e}")
+
+# ─────────────────────────────────────────────
+# IMAGE HOSTING — uploads chart bytes to RayGoldSignals so WhatsApp's
+# bot (index.js) can fetch them by URL. WhatsApp's /send endpoint only
+# accepts image_url, not raw bytes, so this bridge is required.
+# ─────────────────────────────────────────────
+
+async def host_image_for_whatsapp(image_bytes, content_type="image/jpeg"):
+    """Upload image bytes to RayGoldSignals /host_image and return the public URL, or None on failure."""
+    if not image_bytes:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post(
+                f"{RAY_GOLD_URL}/host_image",
+                content=image_bytes,
+                headers={"Content-Type": content_type}
+            )
+            if r.status_code == 200:
+                url = r.json().get("url")
+                logger.info(f"✅ Chart image hosted: {url}")
+                return url
+            else:
+                logger.warning(f"⚠️ Image hosting failed: {r.status_code} {r.text[:200]}")
+    except Exception as e:
+        logger.error(f"❌ Image hosting error: {e}")
+    return None
 
 # ─────────────────────────────────────────────
 # CHART IMAGE
@@ -194,7 +220,6 @@ def get_direction(text):
         return "SELL"
     if re.search(r'\bbu\b', text, re.IGNORECASE):
         return "BUY"
-    # Infer from TP/SL relationship
     sl_match = re.search(r'\bsl\s*[:\s]*([3-9][0-9]{2,3}(?:\.[0-9]+)?)', text, re.IGNORECASE)
     tp_match = re.search(r'\btp\s*[\d:\s]*([3-9][0-9]{2,3}(?:\.[0-9]+)?)', text, re.IGNORECASE)
     prices = re.findall(r'\b([3-9][0-9]{2,3}(?:\.[0-9]+)?)\b', text)
@@ -231,7 +256,6 @@ def is_tp_hit(text):
     return True
 
 def is_secure_profits(text):
-    """Catches TP4+ and 'close now / secure profits' messages — but NOT new signals"""
     if is_new_signal(text):
         return False
     has_tp4_plus = bool(re.search(r'\btp\s*[4-9]\b', text, re.IGNORECASE))
@@ -252,15 +276,8 @@ def is_sl_hit(text):
 # ─────────────────────────────────────────────
 
 def apply_tp_override(tps, entry, direction):
-    """
-    Only override TP1 and TP2 if there are 2+ TPs:
-    BUY:  TP1 = entry + 2, TP2 = entry + 3
-    SELL: TP1 = entry - 2, TP2 = entry - 3
-    If only 1 TP → keep original
-    TP3+ always keep original values
-    """
     if len(tps) <= 1:
-        return tps  # 1 TP or none — keep as is
+        return tps
 
     if direction == "BUY":
         tp1 = round(entry + 2, 2)
@@ -288,14 +305,13 @@ def format_signal(text):
 
     if direction == "BUY":
         entry_top = top_entry
-        entry_bottom = round(top_entry - 5, 2)  # always 5 points range
+        entry_bottom = round(top_entry - 5, 2)
         ref_entry = top_entry
     else:
-        entry_top = round(bottom_entry + 5, 2)  # always 5 points range
+        entry_top = round(bottom_entry + 5, 2)
         entry_bottom = bottom_entry
         ref_entry = bottom_entry
 
-    # Apply TP1/TP2 override rule
     tps = apply_tp_override(tps, ref_entry, direction)
 
     emoji = "🟢" if direction == "BUY" else "🔴"
@@ -344,7 +360,6 @@ def format_tp_hit(text):
             f"This is the power of Kevin's Gold VIP 💎"
         )
     else:
-        # TP4+ falls through to secure profits
         return format_secure_profits()
 
 def format_secure_profits():
@@ -371,12 +386,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not message:
         return
 
-    # Skip videos, documents, stickers, animations
     if message.video or message.document or message.sticker or message.animation:
         logger.info("Skipping non-text media message")
         return
 
-    # Get text from plain message OR photo caption
     text = None
     if message.text:
         text = message.text.strip()
@@ -392,7 +405,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Message from chat {chat_id}")
 
     # ── CHANNEL 1: -1001673250065 (kevingoldsignals) ──────────────
-    # Already formatted — forward as-is to all 4 WhatsApp groups
     if chat_id == KEVINGOLD_CHANNEL:
         logger.info(f"📤 kevingoldsignals → ALL WhatsApp groups: {text[:80]}")
         # Extract image URL — check direct photo, forward, and effective_attachment
@@ -412,7 +424,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if photo:
             try:
                 photo_file = await context.bot.get_file(photo.file_id)
-                image_url = photo_file.file_path
+                image_url = photo_file.file_path  # already a full https://api.telegram.org/... URL
                 logger.info(f"📷 Image detected: {image_url}")
             except Exception as e:
                 logger.warning(f"⚠️ Could not get image file: {e}")
@@ -424,7 +436,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ── CHANNEL: -1004347840465 (testingtradesfiltered) ──────────
-    # Already formatted — send to PREMIUM GOLD GROUP + MT5 only
     if chat_id == VIP_CHANNEL:
         logger.info(f"📤 testingtradesfiltered → MT5 only (WhatsApp PAUSED): {text[:80]}")
         # PAUSED: await send_to_whatsapp(text, group="PREMIUM GOLD GROUP")
@@ -467,13 +478,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if output:
-        # Fetch chart image
         chart_bytes = None
         if is_new_signal(text):
             chart_bytes = await fetch_chart_image()
 
+        # Host chart image so WhatsApp's bot can fetch it by URL
+        whatsapp_image_url = None
         if chart_bytes:
-            # Send as photo with caption to Telegram VIP channel
+            whatsapp_image_url = await host_image_for_whatsapp(chart_bytes, "image/jpeg")
+
+        if chart_bytes:
             from io import BytesIO
             await context.bot.send_photo(
                 chat_id=VIP_CHANNEL,
@@ -482,19 +496,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             logger.info("Message + chart sent to VIP channel ✅")
         else:
-            # Fallback — send text only if chart fetch failed
             await context.bot.send_message(
                 chat_id=VIP_CHANNEL,
                 text=output
             )
             logger.info("Message sent to VIP channel (no chart) ✅")
 
-        # Send EVERYTHING to WhatsApp Dummy group testing (mirrors testingtradesfiltered)
-        await send_to_whatsapp(output, group="Dummy group testing")
-        # PAUSED: await send_to_whatsapp(output, group="PREMIUM GOLD GROUP")
-        logger.info("Message sent to WhatsApp Dummy group testing ✅")
+        # Send to WhatsApp Dummy group + PREMIUM GOLD GROUP, with chart image
+        await send_to_whatsapp(output, group="Dummy group testing", image_url=whatsapp_image_url)
+        await send_to_whatsapp(output, group="PREMIUM GOLD GROUP", image_url=whatsapp_image_url)
+        logger.info("Message sent to WhatsApp Dummy group testing + PREMIUM GOLD GROUP ✅")
 
-        # Send formatted signal to MT5
         if is_new_signal(text):
             await send_to_mt5(output)
             logger.info("Formatted signal sent to MT5 ✅")
