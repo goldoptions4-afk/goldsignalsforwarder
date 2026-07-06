@@ -374,9 +374,9 @@ def format_secure_profits():
 
 def format_sl_hit():
     return (
-        f"❌ SL HIT\n"
+        f"❌ Apologies, We Hit SL On This Trade\n"
         f"XAU/USD | GOLD\n\n"
-        f"Setup invalid. We will be looking for more trades 🔍"
+        f"We will be looking for more setups 🔍"
     )
 
 # ─────────────────────────────────────────────
@@ -419,6 +419,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── CHANNEL 1: -1001673250065 (kevingoldsignals) ──────────────
     if chat_id == KEVINGOLD_CHANNEL:
+        # [TG] tag anywhere in the message → Telegram only, skip WhatsApp entirely.
+        # Case-insensitive. The tag itself is stripped so Telegram viewers don't see it.
+        if re.search(r'\[TG\]', text, re.IGNORECASE):
+            cleaned = re.sub(r'\s*\[TG\]\s*', ' ', text, flags=re.IGNORECASE).strip()
+            logger.info(f"🔒 [TG] tag detected — Telegram-only: {cleaned[:80]}")
+            # No forwarding to WhatsApp. Telegram posting is handled natively by
+            # Kevin's channel itself; nothing more to do here.
+            return
+
         logger.info(f"📤 kevingoldsignals → ALL WhatsApp groups: {text[:80]}")
         # Extract image URL — check direct photo, forward, and effective_attachment
         image_url = None
@@ -472,6 +481,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = load_state()
     output = None
+    is_tp_hit_msg = False
+    is_sl_hit_msg = False
 
     if is_new_signal(text):
         if is_duplicate_signal(text, state):
@@ -485,6 +496,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif is_tp_hit(text):
         output = format_tp_hit(text)
+        is_tp_hit_msg = True
         logger.info("Detected: TP HIT")
 
     elif is_secure_profits(text):
@@ -493,6 +505,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif is_sl_hit(text):
         output = format_sl_hit()
+        is_sl_hit_msg = True
         logger.info("Detected: SL HIT")
 
     else:
@@ -524,10 +537,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             logger.info("Message sent to VIP channel (no chart) ✅")
 
-        # Send to WhatsApp Dummy group + PREMIUM GOLD GROUP, with chart image
-        await send_to_whatsapp(output, group="Dummy group testing", image_url=whatsapp_image_url)
-        await send_to_whatsapp(output, group="PREMIUM GOLD GROUP", image_url=whatsapp_image_url)
-        logger.info("Message sent to WhatsApp Dummy group testing + PREMIUM GOLD GROUP ✅")
+        # Send to WhatsApp Dummy group + PREMIUM GOLD GROUP, with chart image.
+        # EXCEPTION: TP-hit updates are sent to WhatsApp by app.py (with the
+        # profit card), so we skip them here to avoid a doubled message.
+        if is_tp_hit_msg or is_sl_hit_msg:
+            logger.info("TP/SL hit — skipping WhatsApp send (app.py sends MT5-driven TP/SL messages)")
+        else:
+            await send_to_whatsapp(output, group="Dummy group testing", image_url=whatsapp_image_url)
+            await send_to_whatsapp(output, group="PREMIUM GOLD GROUP", image_url=whatsapp_image_url)
+            logger.info("Message sent to WhatsApp Dummy group testing + PREMIUM GOLD GROUP ✅")
 
         if is_new_signal(text):
             await send_to_mt5(output)
