@@ -36,8 +36,8 @@ async def send_to_mt5(text):
     except Exception as e:
         logger.error(f"❌ MT5 send error: {e}")
 
-async def send_to_whatsapp(message, group=None, image_url=None, video_url=None):
-    """Send message to WhatsApp — specific group or all groups, with optional image or video"""
+async def send_to_whatsapp(message, group=None, image_url=None, video_url=None, voice_url=None):
+    """Send message to WhatsApp — specific group or all groups, with optional image, video, or voice"""
     try:
         payload = {"message": message}
         if group:
@@ -46,13 +46,18 @@ async def send_to_whatsapp(message, group=None, image_url=None, video_url=None):
             payload["image_url"] = image_url
         if video_url:
             payload["video_url"] = video_url
+        if voice_url:
+            payload["voice_url"] = voice_url
         async with httpx.AsyncClient(timeout=15.0) as client:
             r = await client.post(
                 f"{WHATSAPP_URL}/send",
                 json=payload
             )
             if r.status_code == 200:
-                media_note = " (with video)" if video_url else (" (with image)" if image_url else "")
+                if voice_url: media_note = " (with voice)"
+                elif video_url: media_note = " (with video)"
+                elif image_url: media_note = " (with image)"
+                else: media_note = ""
                 logger.info(f"✅ Message sent to WhatsApp{' → ' + group if group else ''}{media_note}")
             else:
                 logger.warning(f"⚠️ WhatsApp send failed: {r.status_code} {r.text}")
@@ -391,12 +396,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = message.chat.id
 
     # Skip non-text media (stickers, docs, animations) everywhere, and
-    # skip video everywhere EXCEPT kevingoldsignals, which now supports it.
+    # skip video/voice everywhere EXCEPT kevingoldsignals which forwards them.
     if message.document or message.sticker or message.animation:
         logger.info("Skipping non-text media message")
         return
     if message.video and chat_id != KEVINGOLD_CHANNEL:
         logger.info("Skipping video — only kevingoldsignals channel supports video")
+        return
+    if message.voice and chat_id != KEVINGOLD_CHANNEL:
+        logger.info("Skipping voice — only kevingoldsignals channel supports voice")
         return
 
     text = None
@@ -406,6 +414,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = message.caption.strip()
     elif message.video and message.caption:
         text = message.caption.strip()
+    elif message.voice and message.caption:
+        text = message.caption.strip()
+    elif message.voice and not message.caption:
+        # Voice notes on Telegram usually have no caption — that's fine, forward as pure audio
+        text = ""
     elif message.photo and not message.caption:
         logger.info("Skipping photo with no caption")
         return
@@ -429,9 +442,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         logger.info(f"📤 kevingoldsignals → ALL WhatsApp groups: {text[:80]}")
-        # Extract image URL — check direct photo, forward, and effective_attachment
+        # Extract media URL — photo, video, or voice
         image_url = None
         video_url = None
+        voice_url = None
         photo = None
         if message.photo:
             photo = message.photo[-1]
@@ -459,11 +473,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 # Telegram bot API caps file downloads at 20MB — large videos land here
                 logger.warning(f"⚠️ Could not get video file (possibly over Telegram's 20MB bot API limit): {e}")
+        elif message.voice:
+            try:
+                voice_file = await context.bot.get_file(message.voice.file_id)
+                voice_url = voice_file.file_path
+                logger.info(f"🎙️ Voice detected: {voice_url} ({message.voice.file_size} bytes)")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not get voice file: {e}")
         else:
-            logger.info("📝 No image or video found in message")
+            logger.info("📝 No image, video, or voice found in message")
 
         # Send to all groups at once — no filtering needed
-        await send_to_whatsapp(text, image_url=image_url, video_url=video_url)
+        await send_to_whatsapp(text, image_url=image_url, video_url=video_url, voice_url=voice_url)
         return
 
     # ── CHANNEL: -1004347840465 (testingtradesfiltered) ──────────
