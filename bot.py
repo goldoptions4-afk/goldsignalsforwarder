@@ -36,12 +36,14 @@ async def send_to_mt5(text):
     except Exception as e:
         logger.error(f"❌ MT5 send error: {e}")
 
-async def send_to_whatsapp(message, group=None, image_url=None, video_url=None, voice_url=None):
-    """Send message to WhatsApp — specific group or all groups, with optional image, video, or voice"""
+async def send_to_whatsapp(message, group=None, image_url=None, video_url=None, voice_url=None, exclude=None):
+    """Send message to WhatsApp — specific group, all groups, or all-except-excluded"""
     try:
         payload = {"message": message}
         if group:
             payload["group"] = group
+        if exclude:
+            payload["exclude"] = exclude
         if image_url:
             payload["image_url"] = image_url
         if video_url:
@@ -63,6 +65,42 @@ async def send_to_whatsapp(message, group=None, image_url=None, video_url=None, 
                 logger.warning(f"⚠️ WhatsApp send failed: {r.status_code} {r.text}")
     except Exception as e:
         logger.error(f"❌ WhatsApp send error: {e}")
+
+# ─────────────────────────────────────────────
+# TELEGRAM → WHATSAPP FORMATTING
+# Telegram strips the ** markers and sends formatting as entities.
+# text_markdown_v2 rebuilds MarkdownV2, which is close to WhatsApp style:
+#   *bold* and _italic_ and ~strike~ are identical in both.
+# We just need to fix the differences and unescape MDv2 escapes.
+# ─────────────────────────────────────────────
+
+def tg_markdown_to_whatsapp(md):
+    """Convert Telegram MarkdownV2 to WhatsApp formatting."""
+    if not md:
+        return md
+    text = md
+    # Links: [label](url) -> label (url)   (WhatsApp has no markdown links)
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'\1 (\2)', text)
+    # Spoilers ||x|| -> x
+    text = re.sub(r'\|\|(.+?)\|\|', r'\1', text, flags=re.DOTALL)
+    # Underline __x__ -> x   (WhatsApp has no underline)
+    text = re.sub(r'__(.+?)__', r'\1', text, flags=re.DOTALL)
+    # Blockquote lines: strip leading > 
+    text = re.sub(r'^>\s?', '', text, flags=re.MULTILINE)
+    # Unescape MarkdownV2 backslash escapes: \. \- \! etc.
+    text = re.sub(r'\\([_*\[\]()~`>#+\-=|{}.!])', r'\1', text)
+    return text
+
+def get_whatsapp_text(message, plain_text):
+    """Best-effort WhatsApp-formatted version of a Telegram message."""
+    try:
+        if message.text:
+            return tg_markdown_to_whatsapp(message.text_markdown_v2)
+        if message.caption:
+            return tg_markdown_to_whatsapp(message.caption_markdown_v2)
+    except Exception as e:
+        logger.warning(f"Markdown conversion failed, using plain text: {e}")
+    return plain_text
 
 # ─────────────────────────────────────────────
 # IMAGE HOSTING — uploads chart bytes to RayGoldSignals so WhatsApp's
@@ -441,7 +479,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Kevin's channel itself; nothing more to do here.
             return
 
-        logger.info(f"📤 kevingoldsignals → ALL WhatsApp groups: {text[:80]}")
+        # [NP] tag → send everywhere EXCEPT Premium Gold Group. Tag is stripped.
+        exclude_group = None
+        if re.search(r'\[NP\]', text, re.IGNORECASE):
+            exclude_group = "PREMIUM GOLD GROUP"
+            text = re.sub(r'\s*\[NP\]\s*', ' ', text, flags=re.IGNORECASE).strip()
+            logger.info("🚫 [NP] tag — skipping PREMIUM GOLD GROUP for this message")
+
+        # Convert Telegram formatting (bold/italic/strike) to WhatsApp style
+        wa_text = get_whatsapp_text(message, text)
+        if exclude_group:
+            wa_text = re.sub(r'\s*\[NP\]\s*', ' ', wa_text, flags=re.IGNORECASE).strip()
+
+        logger.info(f"📤 kevingoldsignals → WhatsApp groups{' (except Premium)' if exclude_group else ''}: {text[:80]}")
         # Extract media URL — photo, video, or voice
         image_url = None
         video_url = None
@@ -483,8 +533,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             logger.info("📝 No image, video, or voice found in message")
 
-        # Send to all groups at once — no filtering needed
-        await send_to_whatsapp(text, image_url=image_url, video_url=video_url, voice_url=voice_url)
+        # Send to all groups (minus excluded, if [NP] was used)
+        await send_to_whatsapp(wa_text, image_url=image_url, video_url=video_url,
+                               voice_url=voice_url, exclude=exclude_group)
         return
 
     # ── CHANNEL: -1004347840465 (testingtradesfiltered) ──────────
