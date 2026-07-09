@@ -14,6 +14,7 @@ CHART_IMG_API_KEY = os.environ.get("CHART_IMG_API_KEY", "GhKjWUCZA61Lx0OwoNZvp8A
 HOLDING_CHANNEL = int(os.environ.get("HOLDING_CHANNEL", "-1002083673417"))
 KEVINGOLD_CHANNEL = int(os.environ.get("KEVINGOLD_CHANNEL", "-1001673250065"))
 VIP_CHANNEL = int(os.environ.get("VIP_CHANNEL", "-1004347840465"))
+STORIES_CHANNEL = int(os.environ.get("STORIES_CHANNEL", "0"))  # set in Railway to enable stories
 RAY_GOLD_URL = os.environ.get("RAY_GOLD_URL", "https://web-production-f54d0.up.railway.app")
 WHATSAPP_URL = os.environ.get("WHATSAPP_URL", "https://web-production-6cec8d.up.railway.app")
 
@@ -423,6 +424,51 @@ def format_sl_hit():
     )
 
 # ─────────────────────────────────────────────
+# STORIES — dedicated Telegram channel → WhatsApp Status
+# ─────────────────────────────────────────────
+
+async def handle_story_post(message, context):
+    """Post image/video from the stories channel as a WhatsApp Status."""
+    caption = (message.caption or "").strip()
+    image_url = None
+    video_url = None
+
+    if message.photo:
+        try:
+            photo_file = await context.bot.get_file(message.photo[-1].file_id)
+            image_url = photo_file.file_path
+            logger.info(f"📸 Story image: {image_url}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not get story image: {e}")
+            return
+    elif message.video:
+        try:
+            video_file = await context.bot.get_file(message.video.file_id)
+            video_url = video_file.file_path
+            logger.info(f"🎥 Story video: {video_url} ({message.video.file_size} bytes)")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not get story video (20MB bot API limit?): {e}")
+            return
+    else:
+        logger.info("Stories channel: not an image/video — skipping (text statuses not supported)")
+        return
+
+    try:
+        payload = {"caption": caption}
+        if image_url:
+            payload["image_url"] = image_url
+        if video_url:
+            payload["video_url"] = video_url
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.post(f"{WHATSAPP_URL}/story", json=payload)
+            if r.status_code == 200:
+                logger.info(f"✅ Story posted: {r.json()}")
+            else:
+                logger.warning(f"⚠️ Story post failed: {r.status_code} {r.text[:200]}")
+    except Exception as e:
+        logger.error(f"❌ Story post error: {e}")
+
+# ─────────────────────────────────────────────
 # HANDLER
 # ─────────────────────────────────────────────
 
@@ -432,6 +478,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = message.chat.id
+
+    # ── STORIES CHANNEL: image/video → WhatsApp Status ────────────
+    if STORIES_CHANNEL and chat_id == STORIES_CHANNEL:
+        await handle_story_post(message, context)
+        return
 
     # Skip non-text media (stickers, docs, animations) everywhere, and
     # skip video/voice everywhere EXCEPT kevingoldsignals which forwards them.
@@ -479,12 +530,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Kevin's channel itself; nothing more to do here.
             return
 
-        # [NP] tag → send everywhere EXCEPT Premium Gold Group. Tag is stripped.
+        # Skip PREMIUM GOLD GROUP when:
+        #  - the message contains the [NP] tag (tag gets stripped), OR
+        #  - the message contains the word "premium" anywhere (case-insensitive,
+        #    stays in the message — ads for premium shouldn't go TO premium members)
         exclude_group = None
         if re.search(r'\[NP\]', text, re.IGNORECASE):
             exclude_group = "PREMIUM GOLD GROUP"
             text = re.sub(r'\s*\[NP\]\s*', ' ', text, flags=re.IGNORECASE).strip()
             logger.info("🚫 [NP] tag — skipping PREMIUM GOLD GROUP for this message")
+        elif re.search(r'\bpremium\b', text, re.IGNORECASE):
+            exclude_group = "PREMIUM GOLD GROUP"
+            logger.info("🚫 Word 'premium' detected — skipping PREMIUM GOLD GROUP for this message")
 
         # Convert Telegram formatting (bold/italic/strike) to WhatsApp style
         wa_text = get_whatsapp_text(message, text)
