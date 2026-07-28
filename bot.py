@@ -14,7 +14,8 @@ CHART_IMG_API_KEY = os.environ.get("CHART_IMG_API_KEY", "GhKjWUCZA61Lx0OwoNZvp8A
 HOLDING_CHANNEL = int(os.environ.get("HOLDING_CHANNEL", "-1002083673417"))
 KEVINGOLD_CHANNEL = int(os.environ.get("KEVINGOLD_CHANNEL", "-1001673250065"))
 VIP_CHANNEL = int(os.environ.get("VIP_CHANNEL", "-1004347840465"))
-STORIES_CHANNEL = int(os.environ.get("STORIES_CHANNEL", "0"))  # set in Railway to enable stories
+STORIES_CHANNEL = int(os.environ.get("STORIES_CHANNEL", "0"))
+HOLDING_ENABLED = os.environ.get("HOLDING_ENABLED", "true").strip().lower() != "false"  # set in Railway to enable stories
 RAY_GOLD_URL = os.environ.get("RAY_GOLD_URL", "https://web-production-f54d0.up.railway.app")
 WHATSAPP_URL = os.environ.get("WHATSAPP_URL", "https://web-production-6cec8d.up.railway.app")
 
@@ -67,41 +68,6 @@ async def send_to_whatsapp(message, group=None, image_url=None, video_url=None, 
     except Exception as e:
         logger.error(f"❌ WhatsApp send error: {e}")
 
-# ─────────────────────────────────────────────
-# TELEGRAM → WHATSAPP FORMATTING
-# Telegram strips the ** markers and sends formatting as entities.
-# text_markdown_v2 rebuilds MarkdownV2, which is close to WhatsApp style:
-#   *bold* and _italic_ and ~strike~ are identical in both.
-# We just need to fix the differences and unescape MDv2 escapes.
-# ─────────────────────────────────────────────
-
-def tg_markdown_to_whatsapp(md):
-    """Convert Telegram MarkdownV2 to WhatsApp formatting."""
-    if not md:
-        return md
-    text = md
-    # Links: [label](url) -> label (url)   (WhatsApp has no markdown links)
-    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'\1 (\2)', text)
-    # Spoilers ||x|| -> x
-    text = re.sub(r'\|\|(.+?)\|\|', r'\1', text, flags=re.DOTALL)
-    # Underline __x__ -> x   (WhatsApp has no underline)
-    text = re.sub(r'__(.+?)__', r'\1', text, flags=re.DOTALL)
-    # Blockquote lines: strip leading > 
-    text = re.sub(r'^>\s?', '', text, flags=re.MULTILINE)
-    # Unescape MarkdownV2 backslash escapes: \. \- \! etc.
-    text = re.sub(r'\\([_*\[\]()~`>#+\-=|{}.!])', r'\1', text)
-    return text
-
-def get_whatsapp_text(message, plain_text):
-    """Best-effort WhatsApp-formatted version of a Telegram message."""
-    try:
-        if message.text:
-            return tg_markdown_to_whatsapp(message.text_markdown_v2)
-        if message.caption:
-            return tg_markdown_to_whatsapp(message.caption_markdown_v2)
-    except Exception as e:
-        logger.warning(f"Markdown conversion failed, using plain text: {e}")
-    return plain_text
 
 # ─────────────────────────────────────────────
 # IMAGE HOSTING — uploads chart bytes to RayGoldSignals so WhatsApp's
@@ -479,9 +445,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = message.chat.id
 
-    # ── STORIES CHANNEL: image/video → WhatsApp Status ────────────
+    # Freshness guard: never forward stale messages after downtime.
+    try:
+        from datetime import datetime, timezone
+        age_seconds = (datetime.now(timezone.utc) - message.date).total_seconds()
+        if age_seconds > 300:
+            logger.info(f"⏭️ Skipping stale message ({int(age_seconds)}s old) from chat {chat_id}")
+            return
+    except Exception as e:
+        logger.warning(f"Freshness check failed (continuing anyway): {e}")
+
+    # ── STORIES CHANNEL: paused ───────────────────────────────────
     if STORIES_CHANNEL and chat_id == STORIES_CHANNEL:
-        await handle_story_post(message, context)
+        logger.info("⏸️ Stories flow paused — ignoring stories channel post")
         return
 
     # Skip non-text media (stickers, docs, animations) everywhere, and
@@ -530,6 +506,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Kevin's channel itself; nothing more to do here.
             return
 
+        # KEYWORD ALLOWLIST: only forward messages mentioning TP1/TP2/TP3
+        # or "triggered" to WhatsApp. Everything else stays Telegram-only.
+        if not re.search(r'\b(tp\s*[123]|triggered)\b', text, re.IGNORECASE):
+            logger.info(f"⏭️ No TP/triggered keyword — not forwarding: {text[:60]}")
+            return
+
         # Skip PREMIUM GOLD GROUP when:
         #  - the message contains the [NP] tag (tag gets stripped), OR
         #  - the message contains the word "premium" anywhere (case-insensitive,
@@ -543,10 +525,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             exclude_group = "PREMIUM GOLD GROUP"
             logger.info("🚫 Word 'premium' detected — skipping PREMIUM GOLD GROUP for this message")
 
-        # Convert Telegram formatting (bold/italic/strike) to WhatsApp style
-        wa_text = get_whatsapp_text(message, text)
-        if exclude_group:
-            wa_text = re.sub(r'\s*\[NP\]\s*', ' ', wa_text, flags=re.IGNORECASE).strip()
+        # Use plain text as-is (formatting conversion disabled)
+        wa_text = text
 
         logger.info(f"📤 kevingoldsignals → WhatsApp groups{' (except Premium)' if exclude_group else ''}: {text[:80]}")
         # Extract media URL — photo, video, or voice
@@ -604,6 +584,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── HOLDING CHANNEL: filter & reformat ────────────────────────
     if chat_id != HOLDING_CHANNEL:
+        return
+
+    if not HOLDING_ENABLED:
+        logger.info("⏸️ Holding flow paused (HOLDING_ENABLED=false)")
         return
 
     logger.info(f"📥 RECEIVED: {text[:150]}")
@@ -688,7 +672,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     logger.info("Bot started — listening for signals...")
-    app.run_polling(allowed_updates=["channel_post", "message"])
+    app.run_polling(allowed_updates=["channel_post", "message"], drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
