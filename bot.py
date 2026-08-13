@@ -506,12 +506,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Kevin's channel itself; nothing more to do here.
             return
 
-        # KEYWORD ALLOWLIST: only forward messages mentioning TP1/TP2/TP3
-        # or "triggered" to WhatsApp. Everything else stays Telegram-only.
-        if not re.search(r'\b(tp\s*[123]|triggered)\b', text, re.IGNORECASE):
-            logger.info(f"⏭️ No TP/triggered keyword — not forwarding: {text[:60]}")
-            return
-
         # Skip PREMIUM GOLD GROUP when:
         #  - the message contains the [NP] tag (tag gets stripped), OR
         #  - the message contains the word "premium" anywhere (case-insensitive,
