@@ -15,9 +15,11 @@ HOLDING_CHANNEL = int(os.environ.get("HOLDING_CHANNEL", "-1002083673417"))
 KEVINGOLD_CHANNEL = int(os.environ.get("KEVINGOLD_CHANNEL", "-1001673250065"))
 VIP_CHANNEL = int(os.environ.get("VIP_CHANNEL", "-1004347840465"))
 STORIES_CHANNEL = int(os.environ.get("STORIES_CHANNEL", "0"))
-HOLDING_ENABLED = os.environ.get("HOLDING_ENABLED", "true").strip().lower() != "false"  # set in Railway to enable stories
+HOLDING_ENABLED = os.environ.get("HOLDING_ENABLED", "true").strip().lower() != "false"
 RAY_GOLD_URL = os.environ.get("RAY_GOLD_URL", "https://web-production-f54d0.up.railway.app")
 WHATSAPP_URL = os.environ.get("WHATSAPP_URL", "https://web-production-6cec8d.up.railway.app")
+# Second WhatsApp sender (new number, new group). Leave empty to disable.
+WHATSAPP_URL_2 = os.environ.get("WHATSAPP_URL_2", "").rstrip("/")
 
 # ─────────────────────────────────────────────
 # RAYGOLDSIGNALS — send signal to MT5
@@ -38,8 +40,10 @@ async def send_to_mt5(text):
     except Exception as e:
         logger.error(f"❌ MT5 send error: {e}")
 
-async def send_to_whatsapp(message, group=None, image_url=None, video_url=None, voice_url=None, exclude=None):
-    """Send message to WhatsApp — specific group, all groups, or all-except-excluded"""
+async def send_to_whatsapp(message, group=None, image_url=None, video_url=None,
+                           voice_url=None, exclude=None, base_url=None):
+    """Send message to one WhatsApp service (base_url, default = service 1)."""
+    url = (base_url or WHATSAPP_URL).rstrip("/")
     try:
         payload = {"message": message}
         if group:
@@ -53,30 +57,32 @@ async def send_to_whatsapp(message, group=None, image_url=None, video_url=None, 
         if voice_url:
             payload["voice_url"] = voice_url
         async with httpx.AsyncClient(timeout=15.0) as client:
-            r = await client.post(
-                f"{WHATSAPP_URL}/send",
-                json=payload
-            )
+            r = await client.post(f"{url}/send", json=payload)
             if r.status_code == 200:
                 if voice_url: media_note = " (with voice)"
                 elif video_url: media_note = " (with video)"
                 elif image_url: media_note = " (with image)"
                 else: media_note = ""
-                logger.info(f"✅ Message sent to WhatsApp{' → ' + group if group else ''}{media_note}")
+                logger.info(f"✅ Sent to WhatsApp [{url}]{' → ' + group if group else ''}{media_note}")
             else:
-                logger.warning(f"⚠️ WhatsApp send failed: {r.status_code} {r.text}")
+                logger.warning(f"⚠️ WhatsApp send failed [{url}]: {r.status_code} {r.text}")
     except Exception as e:
-        logger.error(f"❌ WhatsApp send error: {e}")
+        logger.error(f"❌ WhatsApp send error [{url}]: {e}")
 
+async def send_to_all_whatsapp(message, image_url=None, video_url=None, voice_url=None, exclude=None):
+    """Broadcast to BOTH WhatsApp services (number 1 and, if set, number 2)."""
+    await send_to_whatsapp(message, image_url=image_url, video_url=video_url,
+                           voice_url=voice_url, exclude=exclude, base_url=WHATSAPP_URL)
+    if WHATSAPP_URL_2:
+        await send_to_whatsapp(message, image_url=image_url, video_url=video_url,
+                               voice_url=voice_url, exclude=exclude, base_url=WHATSAPP_URL_2)
 
 # ─────────────────────────────────────────────
 # IMAGE HOSTING — uploads chart bytes to RayGoldSignals so WhatsApp's
-# bot (index.js) can fetch them by URL. WhatsApp's /send endpoint only
-# accepts image_url, not raw bytes, so this bridge is required.
+# bot (index.js) can fetch them by URL.
 # ─────────────────────────────────────────────
 
 async def host_image_for_whatsapp(image_bytes, content_type="image/jpeg"):
-    """Upload image bytes to RayGoldSignals /host_image and return the public URL, or None on failure."""
     if not image_bytes:
         return None
     try:
@@ -101,7 +107,6 @@ async def host_image_for_whatsapp(image_bytes, content_type="image/jpeg"):
 # ─────────────────────────────────────────────
 
 async def fetch_chart_image():
-    """Fetch XAUUSD 5m chart from chart-img.com and return image bytes"""
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             r = await client.post(
@@ -149,7 +154,6 @@ def save_state(state):
         logger.error(f"Failed to save state: {e}")
 
 def is_duplicate_signal(text, state):
-    """Prevent same signal firing twice within 60 seconds"""
     import hashlib, time
     h = hashlib.md5(text.encode()).hexdigest()[:8]
     now = time.time()
@@ -191,20 +195,7 @@ def extract_entry(text):
 
     return None, None
 
-def extract_tps(text):
-    tps = []
-    matches = re.finditer(
-        r'(?:tp|target)\s*\d*\s*[:\s]?\s*([3-9][0-9]{2,3}(?:\.[0-9]+)?)',
-        text, re.IGNORECASE
-    )
-    for m in matches:
-        val = m.group(1)
-        if val.lower() != 'open':
-            tps.append(float(val))
-    return tps
-
 def extract_all_tps(text):
-    """Extract ALL TPs — handles TP1 4000, TP : 4000, TP 4000 formats"""
     tps = []
     for m in re.finditer(
         r'\btp\s*(?:\d{1,2}\s*)?[:\s]?\s*([3-9][0-9]{3}(?:\.[0-9]+)?)',
@@ -363,13 +354,13 @@ def format_tp_hit(text):
         return (
             f"GOLD SMASHED TP2 ✅✅✅✅\n\n"
             f"Close remaining positions or move SL to Break Even 🔒\n\n"
-            f"Stop watching trades — let us execute them for you. Join Gold Account Management 💰"
+            f"Stop watching trades, let us execute them for you. Join Gold Account Management 💰"
         )
     elif tp_num == 3:
         return (
             f"GOLD SMASHED TP3 ✅✅✅✅✅\n\n"
             f"Close all positions and lock in your profits 🔒\n\n"
-            f"This is what Gold Account Management does for our clients — every single trade, automatically in your account. Join now 💰"
+            f"This is what Gold Account Management does for our clients, every single trade, automatically in your account. Join now 💰"
         )
     else:
         return format_secure_profits()
@@ -390,51 +381,6 @@ def format_sl_hit():
     )
 
 # ─────────────────────────────────────────────
-# STORIES — dedicated Telegram channel → WhatsApp Status
-# ─────────────────────────────────────────────
-
-async def handle_story_post(message, context):
-    """Post image/video from the stories channel as a WhatsApp Status."""
-    caption = (message.caption or "").strip()
-    image_url = None
-    video_url = None
-
-    if message.photo:
-        try:
-            photo_file = await context.bot.get_file(message.photo[-1].file_id)
-            image_url = photo_file.file_path
-            logger.info(f"📸 Story image: {image_url}")
-        except Exception as e:
-            logger.warning(f"⚠️ Could not get story image: {e}")
-            return
-    elif message.video:
-        try:
-            video_file = await context.bot.get_file(message.video.file_id)
-            video_url = video_file.file_path
-            logger.info(f"🎥 Story video: {video_url} ({message.video.file_size} bytes)")
-        except Exception as e:
-            logger.warning(f"⚠️ Could not get story video (20MB bot API limit?): {e}")
-            return
-    else:
-        logger.info("Stories channel: not an image/video — skipping (text statuses not supported)")
-        return
-
-    try:
-        payload = {"caption": caption}
-        if image_url:
-            payload["image_url"] = image_url
-        if video_url:
-            payload["video_url"] = video_url
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            r = await client.post(f"{WHATSAPP_URL}/story", json=payload)
-            if r.status_code == 200:
-                logger.info(f"✅ Story posted: {r.json()}")
-            else:
-                logger.warning(f"⚠️ Story post failed: {r.status_code} {r.text[:200]}")
-    except Exception as e:
-        logger.error(f"❌ Story post error: {e}")
-
-# ─────────────────────────────────────────────
 # HANDLER
 # ─────────────────────────────────────────────
 
@@ -445,19 +391,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = message.chat.id
 
-    # Freshness guard: never forward stale messages after downtime.
+    # Freshness guard: never blast out stale messages after downtime.
     try:
         from datetime import datetime, timezone
         age_seconds = (datetime.now(timezone.utc) - message.date).total_seconds()
         if age_seconds > 300:
-            logger.info(f"⏭️ Skipping stale message ({int(age_seconds)}s old) from chat {chat_id}")
+            logger.info(f"Skipping stale message ({int(age_seconds)}s old) from chat {chat_id}")
             return
     except Exception as e:
         logger.warning(f"Freshness check failed (continuing anyway): {e}")
 
     # ── STORIES CHANNEL: paused ───────────────────────────────────
     if STORIES_CHANNEL and chat_id == STORIES_CHANNEL:
-        logger.info("⏸️ Stories flow paused — ignoring stories channel post")
+        logger.info("Stories flow paused, ignoring stories channel post")
         return
 
     # Skip non-text media (stickers, docs, animations) everywhere, and
@@ -466,10 +412,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info("Skipping non-text media message")
         return
     if message.video and chat_id != KEVINGOLD_CHANNEL:
-        logger.info("Skipping video — only kevingoldsignals channel supports video")
+        logger.info("Skipping video, only kevingoldsignals channel supports video")
         return
     if message.voice and chat_id != KEVINGOLD_CHANNEL:
-        logger.info("Skipping voice — only kevingoldsignals channel supports voice")
+        logger.info("Skipping voice, only kevingoldsignals channel supports voice")
         return
 
     text = None
@@ -482,7 +428,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif message.voice and message.caption:
         text = message.caption.strip()
     elif message.voice and not message.caption:
-        # Voice notes on Telegram usually have no caption — that's fine, forward as pure audio
         text = ""
     elif message.photo and not message.caption:
         logger.info("Skipping photo with no caption")
@@ -495,35 +440,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"Message from chat {chat_id}")
 
-    # ── CHANNEL 1: -1001673250065 (kevingoldsignals) ──────────────
+    # ── CHANNEL 1: kevingoldsignals → BOTH WhatsApp services ─────
     if chat_id == KEVINGOLD_CHANNEL:
         # [TG] tag anywhere in the message → Telegram only, skip WhatsApp entirely.
-        # Case-insensitive. The tag itself is stripped so Telegram viewers don't see it.
         if re.search(r'\[TG\]', text, re.IGNORECASE):
             cleaned = re.sub(r'\s*\[TG\]\s*', ' ', text, flags=re.IGNORECASE).strip()
-            logger.info(f"🔒 [TG] tag detected — Telegram-only: {cleaned[:80]}")
-            # No forwarding to WhatsApp. Telegram posting is handled natively by
-            # Kevin's channel itself; nothing more to do here.
+            logger.info(f"🔒 [TG] tag detected, Telegram-only: {cleaned[:80]}")
             return
 
-        # Skip PREMIUM GOLD GROUP when:
-        #  - the message contains the [NP] tag (tag gets stripped), OR
-        #  - the message contains the word "premium" anywhere (case-insensitive,
-        #    stays in the message — ads for premium shouldn't go TO premium members)
+        # [NP] tag or the word "premium" → exclude PREMIUM GOLD GROUP
+        # (harmless no-op while that group is not in any sender's target list).
         exclude_group = None
         if re.search(r'\[NP\]', text, re.IGNORECASE):
             exclude_group = "PREMIUM GOLD GROUP"
             text = re.sub(r'\s*\[NP\]\s*', ' ', text, flags=re.IGNORECASE).strip()
-            logger.info("🚫 [NP] tag — skipping PREMIUM GOLD GROUP for this message")
+            logger.info("🚫 [NP] tag, excluding PREMIUM GOLD GROUP")
         elif re.search(r'\bpremium\b', text, re.IGNORECASE):
             exclude_group = "PREMIUM GOLD GROUP"
-            logger.info("🚫 Word 'premium' detected — skipping PREMIUM GOLD GROUP for this message")
+            logger.info("🚫 Word 'premium' detected, excluding PREMIUM GOLD GROUP")
 
-        # Use plain text as-is (formatting conversion disabled)
         wa_text = text
 
-        logger.info(f"📤 kevingoldsignals → WhatsApp groups{' (except Premium)' if exclude_group else ''}: {text[:80]}")
-        # Extract media URL — photo, video, or voice
+        logger.info(f"📤 kevingoldsignals → WhatsApp services: {text[:80]}")
         image_url = None
         video_url = None
         voice_url = None
@@ -542,17 +480,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if photo:
             try:
                 photo_file = await context.bot.get_file(photo.file_id)
-                image_url = photo_file.file_path  # already a full https://api.telegram.org/... URL
+                image_url = photo_file.file_path
                 logger.info(f"📷 Image detected: {image_url}")
             except Exception as e:
                 logger.warning(f"⚠️ Could not get image file: {e}")
         elif message.video:
             try:
                 video_file = await context.bot.get_file(message.video.file_id)
-                video_url = video_file.file_path  # full https://api.telegram.org/... URL
+                video_url = video_file.file_path
                 logger.info(f"🎥 Video detected: {video_url} ({message.video.file_size} bytes)")
             except Exception as e:
-                # Telegram bot API caps file downloads at 20MB — large videos land here
                 logger.warning(f"⚠️ Could not get video file (possibly over Telegram's 20MB bot API limit): {e}")
         elif message.voice:
             try:
@@ -564,15 +501,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             logger.info("📝 No image, video, or voice found in message")
 
-        # Send to all groups (minus excluded, if [NP] was used)
-        await send_to_whatsapp(wa_text, image_url=image_url, video_url=video_url,
-                               voice_url=voice_url, exclude=exclude_group)
+        # Send to BOTH WhatsApp services (number 1 group + number 2 group)
+        await send_to_all_whatsapp(wa_text, image_url=image_url, video_url=video_url,
+                                   voice_url=voice_url, exclude=exclude_group)
         return
 
-    # ── CHANNEL: -1004347840465 (testingtradesfiltered) ──────────
+    # ── CHANNEL: testingtradesfiltered → MT5 only ─────────────────
     if chat_id == VIP_CHANNEL:
-        logger.info(f"📤 testingtradesfiltered → MT5 only (WhatsApp PAUSED): {text[:80]}")
-        # PAUSED: await send_to_whatsapp(text, group="PREMIUM GOLD GROUP")
+        logger.info(f"📤 testingtradesfiltered → MT5 only: {text[:80]}")
         await send_to_mt5(text)
         return
 
@@ -581,7 +517,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not HOLDING_ENABLED:
-        logger.info("⏸️ Holding flow paused (HOLDING_ENABLED=false)")
+        logger.info("Holding flow paused (HOLDING_ENABLED=false)")
         return
 
     logger.info(f"📥 RECEIVED: {text[:150]}")
@@ -616,7 +552,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info("Detected: SL HIT")
 
     else:
-        logger.info(f"⏭️ SKIPPED — no pattern matched: {text[:80]}")
+        logger.info(f"⏭️ SKIPPED, no pattern matched: {text[:80]}")
         return
 
     if output:
@@ -624,7 +560,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_new_signal(text):
             chart_bytes = await fetch_chart_image()
 
-        # Host chart image so WhatsApp's bot can fetch it by URL
         whatsapp_image_url = None
         if chart_bytes:
             whatsapp_image_url = await host_image_for_whatsapp(chart_bytes, "image/jpeg")
@@ -644,15 +579,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             logger.info("Message sent to VIP channel (no chart) ✅")
 
-        # Send to WhatsApp Dummy group + PREMIUM GOLD GROUP, with chart image.
-        # EXCEPTION: TP-hit updates are sent to WhatsApp by app.py (with the
-        # profit card), so we skip them here to avoid a doubled message.
+        # TP/SL hits go to WhatsApp via app.py (profit card flow), skip here.
         if is_tp_hit_msg or is_sl_hit_msg:
-            logger.info("TP/SL hit — skipping WhatsApp send (app.py sends MT5-driven TP/SL messages)")
+            logger.info("TP/SL hit, skipping WhatsApp send (app.py sends MT5-driven TP/SL messages)")
         else:
             await send_to_whatsapp(output, group="Dummy group testing", image_url=whatsapp_image_url)
             await send_to_whatsapp(output, group="PREMIUM GOLD GROUP", image_url=whatsapp_image_url)
-            logger.info("Message sent to WhatsApp Dummy group testing + PREMIUM GOLD GROUP ✅")
+            logger.info("Message sent to WhatsApp holding targets ✅")
 
         if is_new_signal(text):
             await send_to_mt5(output)
@@ -665,7 +598,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.ALL, handle_message))
-    logger.info("Bot started — listening for signals...")
+    logger.info("Bot started, listening for signals...")
     app.run_polling(allowed_updates=["channel_post", "message"], drop_pending_updates=True)
 
 if __name__ == "__main__":
